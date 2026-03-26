@@ -66,7 +66,7 @@
       color: var(--muted);
     }
 
-    #status, #patterns {
+    #status, #patterns, #storage {
       margin-top: 10px;
       font-size: 12px;
       line-height: 1.45;
@@ -117,7 +117,6 @@
       z-index: 20;
     }
 
-
     #gui {
       position: fixed;
       top: 16px;
@@ -154,6 +153,7 @@
     </p>
     <div id="status">Status: stopped</div>
     <div id="patterns">Patterns: waiting to start…</div>
+    <div id="storage">Storage: not loaded yet</div>
     <div class="legend">
       <span class="kick">Kick</span>
       <span class="snare">Snare</span>
@@ -164,6 +164,7 @@
   </div>
 
   <script type="module">
+
     import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js";
     import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm";
 
@@ -171,6 +172,7 @@
       const OSC_TYPES = ["sine", "square", "sawtooth", "triangle"];
       const statusEl = document.getElementById("status");
       const patternsEl = document.getElementById("patterns");
+      const storageEl = document.getElementById("storage");
 
       class TechnoApp {
         constructor() {
@@ -192,6 +194,13 @@
           this.roadMarkers = [];
           this.clockFallback = performance.now() * 0.001;
           this.previewState = {};
+          this.saveTimer = null;
+          this.dbPromise = null;
+          this.storageKey = "techno-track-settings-v1";
+          this.dbName = "TechnoTrackVisualizerDB";
+          this.dbStoreName = "presets";
+          this.fileInput = null;
+          this.lastSavedAt = null;
 
           this.settings = {
             bpm: 138,
@@ -236,6 +245,10 @@
             visualSpeed: 64,
             cubeWidth: 1.1,
             cubeDepth: 1.8,
+            saveNow: () => this.persistSettings("manual-save"),
+            exportJSON: () => this.exportSettings(),
+            importJSON: () => this.importSettings(),
+            clearSaved: () => this.clearStoredSettings(),
             play: () => this.play(),
             pause: () => this.pause(),
             stop: () => this.stop(),
@@ -244,9 +257,17 @@
 
           this.initScene();
           this.initGUI();
+          this.createFileInput();
+          this.loadPersistedSettings()
+            .catch((error) => {
+              console.error("Could not restore saved settings", error);
+              this.setStorageMessage("restore failed");
+            })
+            .finally(() => this.updateHUD());
           this.updateHUD();
           this.animate();
           window.addEventListener("resize", () => this.onResize());
+          window.addEventListener("beforeunload", () => this.persistSettingsSync());
         }
 
         initScene() {
@@ -366,6 +387,12 @@
           gui.add(this.settings, "lookAhead", 1.2, 3.2, 0.05).name("Visual Horizon").onChange((v) => this.horizon = v);
           gui.add(this.settings, "visualSpeed", 40, 90, 1).name("Track Speed");
 
+          const storage = gui.addFolder("Storage");
+          storage.add(this.settings, "saveNow").name("Save Now");
+          storage.add(this.settings, "exportJSON").name("Export JSON");
+          storage.add(this.settings, "importJSON").name("Import JSON");
+          storage.add(this.settings, "clearSaved").name("Clear Saved");
+
           const kick = gui.addFolder("Kick");
           kick.add(this.settings, "kickMute").name("Mute");
           kick.add(this.settings, "kickVolume", 0, 1.5, 0.01).name("Volume");
@@ -410,7 +437,259 @@
           bass.add(this.settings, "bassType1", OSC_TYPES).name("Osc 1 Type");
           bass.add(this.settings, "bassType2", OSC_TYPES).name("Osc 2 Type");
 
+          if (typeof gui.onChange === "function") {
+            gui.onChange((event) => this.handleGuiChange(event));
+          }
+
           this.gui = gui;
+        }
+
+        handleGuiChange(event) {
+          const property = event?.property;
+          if (!property) return;
+          if (typeof this.settings[property] === "function") return;
+          if (/Mute$/.test(property)) this.updateCueMuteStates();
+          this.schedulePersist("autosave");
+        }
+
+        getSerializableSettings() {
+          const data = {};
+          for (const [key, value] of Object.entries(this.settings)) {
+            if (typeof value !== "function") data[key] = value;
+          }
+          return data;
+        }
+
+        buildSnapshot(source = "autosave") {
+          return {
+            app: "Techno Track Visualizer",
+            version: 1,
+            savedAt: new Date().toISOString(),
+            source,
+            settings: this.getSerializableSettings()
+          };
+        }
+
+        applySettings(payload, { persist = true } = {}) {
+          const incoming = payload?.settings && typeof payload.settings === "object" ? payload.settings : payload;
+          if (!incoming || typeof incoming !== "object") return;
+
+          for (const key of Object.keys(this.getSerializableSettings())) {
+            if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+              this.settings[key] = incoming[key];
+            }
+          }
+
+          this.horizon = this.settings.lookAhead;
+          this.syncMasterVolume();
+          this.handleBpmChange();
+          this.refreshGUI();
+          this.updateCueMuteStates();
+          this.updateHUD();
+
+          if (persist) this.schedulePersist("apply");
+        }
+
+        refreshGUI() {
+          if (!this.gui) return;
+          if (typeof this.gui.controllersRecursive === "function") {
+            for (const controller of this.gui.controllersRecursive()) controller.updateDisplay();
+            return;
+          }
+          const walk = (folder) => {
+            if (folder.controllers) {
+              for (const controller of folder.controllers) controller.updateDisplay();
+            }
+            if (folder.folders) {
+              for (const child of Object.values(folder.folders)) walk(child);
+            }
+          };
+          walk(this.gui);
+        }
+
+        schedulePersist(source = "autosave") {
+          clearTimeout(this.saveTimer);
+          this.saveTimer = setTimeout(() => this.persistSettings(source), 120);
+        }
+
+        setStorageMessage(message) {
+          storageEl.textContent = `Storage: ${message}`;
+        }
+
+        persistSettingsSync() {
+          try {
+            const snapshot = this.buildSnapshot("beforeunload");
+            localStorage.setItem(this.storageKey, JSON.stringify(snapshot));
+          } catch (error) {
+            console.warn("Could not sync-save settings", error);
+          }
+        }
+
+        async persistSettings(source = "autosave") {
+          const snapshot = this.buildSnapshot(source);
+
+          try {
+            localStorage.setItem(this.storageKey, JSON.stringify(snapshot));
+          } catch (error) {
+            console.warn("Could not save settings to localStorage", error);
+          }
+
+          try {
+            await this.saveSnapshotToIndexedDB(snapshot);
+          } catch (error) {
+            console.warn("Could not save settings to IndexedDB", error);
+          }
+
+          this.lastSavedAt = snapshot.savedAt;
+          this.setStorageMessage(`saved ${new Date(snapshot.savedAt).toLocaleString()}`);
+          return snapshot;
+        }
+
+        createFileInput() {
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = "application/json,.json";
+          input.style.display = "none";
+          input.addEventListener("change", async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+              const text = await file.text();
+              const data = JSON.parse(text);
+              this.applySettings(data, { persist: false });
+              await this.persistSettings("import");
+              this.setStorageMessage(`imported ${file.name}`);
+            } catch (error) {
+              console.error("Could not import settings", error);
+              this.setStorageMessage("import failed");
+            } finally {
+              input.value = "";
+            }
+          });
+          document.body.appendChild(input);
+          this.fileInput = input;
+        }
+
+        importSettings() {
+          this.fileInput?.click();
+        }
+
+        exportSettings() {
+          const snapshot = this.buildSnapshot("export");
+          const stamp = snapshot.savedAt.replace(/[:.]/g, "-");
+          const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `techno-settings-${stamp}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+          this.setStorageMessage(`exported ${a.download}`);
+        }
+
+        clearStoredSettings() {
+          try {
+            localStorage.removeItem(this.storageKey);
+          } catch (error) {
+            console.warn("Could not clear localStorage", error);
+          }
+
+          this.deleteIndexedDBSnapshot().catch((error) => console.warn("Could not clear IndexedDB", error));
+          this.setStorageMessage("cleared saved settings");
+        }
+
+        openSettingsDB() {
+          if (this.dbPromise) return this.dbPromise;
+          if (!("indexedDB" in window)) {
+            this.dbPromise = Promise.resolve(null);
+            return this.dbPromise;
+          }
+
+          this.dbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.dbName, 1);
+            request.onupgradeneeded = () => {
+              const db = request.result;
+              if (!db.objectStoreNames.contains(this.dbStoreName)) {
+                db.createObjectStore(this.dbStoreName, { keyPath: "id" });
+              }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+
+          return this.dbPromise;
+        }
+
+        async saveSnapshotToIndexedDB(snapshot) {
+          const db = await this.openSettingsDB();
+          if (!db) return;
+
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction(this.dbStoreName, "readwrite");
+            tx.objectStore(this.dbStoreName).put({ id: "last", snapshot, savedAt: snapshot.savedAt });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+          });
+        }
+
+        async loadSnapshotFromIndexedDB() {
+          const db = await this.openSettingsDB();
+          if (!db) return null;
+
+          return await new Promise((resolve, reject) => {
+            const tx = db.transaction(this.dbStoreName, "readonly");
+            const request = tx.objectStore(this.dbStoreName).get("last");
+            request.onsuccess = () => resolve(request.result?.snapshot || null);
+            request.onerror = () => reject(request.error);
+          });
+        }
+
+        async deleteIndexedDBSnapshot() {
+          const db = await this.openSettingsDB();
+          if (!db) return;
+
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction(this.dbStoreName, "readwrite");
+            tx.objectStore(this.dbStoreName).delete("last");
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+          });
+        }
+
+        loadSnapshotFromLocalStorage() {
+          try {
+            const raw = localStorage.getItem(this.storageKey);
+            return raw ? JSON.parse(raw) : null;
+          } catch (error) {
+            console.warn("Could not read settings from localStorage", error);
+            return null;
+          }
+        }
+
+        async loadPersistedSettings() {
+          this.setStorageMessage("loading saved settings…");
+          let snapshot = null;
+
+          try {
+            snapshot = await this.loadSnapshotFromIndexedDB();
+          } catch (error) {
+            console.warn("IndexedDB restore failed", error);
+          }
+
+          if (!snapshot) snapshot = this.loadSnapshotFromLocalStorage();
+
+          if (snapshot) {
+            this.applySettings(snapshot, { persist: false });
+            this.lastSavedAt = snapshot.savedAt || null;
+            this.setStorageMessage(`restored ${snapshot.savedAt ? new Date(snapshot.savedAt).toLocaleString() : "saved settings"}`);
+            await this.persistSettings("restore-sync");
+            return snapshot;
+          }
+
+          this.setStorageMessage("using default settings");
+          return null;
         }
 
         ensureAudio() {
@@ -588,30 +867,76 @@
           return THREE.MathUtils.clamp(0.5 + value * 7.5, 0.5, 8.5);
         }
 
-        emitVisual(instrument, freq, type, time) {
-          const height = this.heightFromFreq(freq);
-          const geometry = new THREE.BoxGeometry(this.settings.cubeWidth, height, this.settings.cubeDepth);
+        createCueVisual(instrument, type, geometry) {
           const color = this.oscillatorColor(type, instrument);
-          const material = new THREE.MeshStandardMaterial({
+          const solidMaterial = new THREE.MeshStandardMaterial({
             color,
             emissive: color.clone().multiplyScalar(0.55),
             emissiveIntensity: 1.3,
             roughness: 0.22,
             metalness: 0.6
           });
-          const mesh = new THREE.Mesh(geometry, material);
-          mesh.position.set(this.lanes[instrument] || 0, height / 2, -140);
-          mesh.castShadow = false;
-          mesh.receiveShadow = false;
-          this.scene.add(mesh);
-          this.cues.push({ mesh, time, instrument, freq, type, height });
+          const solidMesh = new THREE.Mesh(geometry, solidMaterial);
+
+          const edgeGeometry = new THREE.EdgesGeometry(geometry);
+          const edgeMaterial = new THREE.LineBasicMaterial({ color });
+          const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+
+          const group = new THREE.Group();
+          group.add(solidMesh);
+          group.add(edgeLines);
+
+          return { color, group, solidMesh, solidMaterial, edgeLines, edgeGeometry, edgeMaterial };
+        }
+
+        setCueMutedState(cue, muted) {
+          cue.muted = muted;
+          cue.solidMesh.visible = !muted;
+          cue.edgeLines.visible = muted;
+        }
+
+        updateCueMuteStates() {
+          for (const cue of this.cues) {
+            this.setCueMutedState(cue, !!this.settings[`${cue.instrument}Mute`]);
+          }
+        }
+
+        emitVisual(instrument, freq, type, time) {
+          const height = this.heightFromFreq(freq);
+          const geometry = new THREE.BoxGeometry(this.settings.cubeWidth, height, this.settings.cubeDepth);
+          const cueVisual = this.createCueVisual(instrument, type, geometry);
+          const { group, solidMesh, solidMaterial, edgeLines, edgeGeometry, edgeMaterial } = cueVisual;
+
+          this.setCueMutedState({ solidMesh, edgeLines, instrument }, !!this.settings[`${instrument}Mute`]);
+
+          group.position.set(this.lanes[instrument] || 0, height / 2, -140);
+          group.castShadow = false;
+          group.receiveShadow = false;
+          this.scene.add(group);
+          this.cues.push({
+            group,
+            solidMesh,
+            solidMaterial,
+            edgeLines,
+            edgeGeometry,
+            edgeMaterial,
+            geometry,
+            time,
+            instrument,
+            freq,
+            type,
+            height,
+            muted: !!this.settings[`${instrument}Mute`]
+          });
         }
 
         clearCues() {
           for (const cue of this.cues) {
-            cue.mesh.geometry.dispose();
-            cue.mesh.material.dispose();
-            this.scene.remove(cue.mesh);
+            cue.geometry.dispose();
+            cue.edgeGeometry.dispose();
+            cue.solidMaterial.dispose();
+            cue.edgeMaterial.dispose();
+            this.scene.remove(cue.group);
           }
           this.cues.length = 0;
         }
@@ -931,21 +1256,23 @@
             const dt = cue.time - now;
             if (dt > this.horizon + 0.15) continue;
             if (dt < -0.35) {
-              cue.mesh.geometry.dispose();
-              cue.mesh.material.dispose();
-              this.scene.remove(cue.mesh);
+              cue.geometry.dispose();
+              cue.edgeGeometry.dispose();
+              cue.solidMaterial.dispose();
+              cue.edgeMaterial.dispose();
+              this.scene.remove(cue.group);
               this.cues.splice(i, 1);
               continue;
             }
 
             const t = THREE.MathUtils.clamp(1 - dt / this.horizon, 0, 1.15);
-            cue.mesh.position.z = -140 + t * this.settings.visualSpeed * this.horizon;
-            cue.mesh.rotation.y += 0.012 + (cue.instrument === "bass" ? 0.014 : 0.005);
-            cue.mesh.position.y = cue.height / 2 + Math.sin((now + i) * 5 + cue.freq * 0.002) * 0.08;
+            cue.group.position.z = -140 + t * this.settings.visualSpeed * this.horizon;
+            cue.group.rotation.y += 0.012 + (cue.instrument === "bass" ? 0.014 : 0.005);
+            cue.group.position.y = cue.height / 2 + Math.sin((now + i) * 5 + cue.freq * 0.002) * 0.08;
 
             const scale = dt < 0 ? 1 + Math.abs(dt) * 2.2 : 1;
-            cue.mesh.scale.set(scale, 1 + Math.sin(now * 8 + i) * 0.02, scale);
-            cue.mesh.material.emissiveIntensity = dt < 0.05 ? 1.8 : 1.2;
+            cue.group.scale.set(scale, 1 + Math.sin(now * 8 + i) * 0.02, scale);
+            cue.solidMaterial.emissiveIntensity = dt < 0.05 ? 1.8 : 1.2;
           }
         }
 
@@ -965,6 +1292,7 @@
 
       window.technoApp = new TechnoApp();
     })();
+  
   </script>
 </body>
 </html>
