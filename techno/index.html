@@ -191,22 +191,43 @@
           this.cues = [];
           this.roadMarkers = [];
           this.clockFallback = performance.now() * 0.001;
+          this.previewState = {};
 
           this.settings = {
             bpm: 138,
             masterVolume: 0.82,
             lookAhead: 2.4,
+            kickMute: false,
+            kickVolume: 1,
+            kickLoop: false,
+            kickPlayPreview: () => this.previewSound("kick"),
+            kickStopPreview: () => this.stopPreview("kick"),
             kickBaseFreq: 150,
             kickDecay: 0.14,
             kickType: "sine",
+            snareMute: false,
+            snareVolume: 0.95,
+            snareLoop: false,
+            snarePlayPreview: () => this.previewSound("snare"),
+            snareStopPreview: () => this.stopPreview("snare"),
             snareToneFreq: 180,
             snareNoiseFreq: 2200,
             snareDecay: 0.13,
             snareType: "triangle",
+            hatMute: false,
+            hatVolume: 0.75,
+            hatLoop: false,
+            hatPlayPreview: () => this.previewSound("hat"),
+            hatStopPreview: () => this.stopPreview("hat"),
             hatFreq: 9500,
             hatToneFreq: 4200,
             hatDecay: 0.05,
             hatType: "square",
+            bassMute: false,
+            bassVolume: 0.92,
+            bassLoop: false,
+            bassPlayPreview: () => this.previewSound("bass"),
+            bassStopPreview: () => this.stopPreview("bass"),
             bassBaseFreq: 55,
             bassFilter: 980,
             bassDecay: 0.22,
@@ -340,29 +361,49 @@
           gui.add(this.settings, "pause").name("Pause");
           gui.add(this.settings, "stop").name("Stop");
           gui.add(this.settings, "restart").name("Restart");
-          gui.add(this.settings, "bpm", 90, 180, 1).name("BPM");
+          gui.add(this.settings, "bpm", 90, 180, 1).name("BPM").onChange(() => this.handleBpmChange());
           gui.add(this.settings, "masterVolume", 0, 1, 0.01).name("Master Volume").onChange(() => this.syncMasterVolume());
           gui.add(this.settings, "lookAhead", 1.2, 3.2, 0.05).name("Visual Horizon").onChange((v) => this.horizon = v);
           gui.add(this.settings, "visualSpeed", 40, 90, 1).name("Track Speed");
 
           const kick = gui.addFolder("Kick");
+          kick.add(this.settings, "kickMute").name("Mute");
+          kick.add(this.settings, "kickVolume", 0, 1.5, 0.01).name("Volume");
+          kick.add(this.settings, "kickLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("kick", v));
+          kick.add(this.settings, "kickPlayPreview").name("Play");
+          kick.add(this.settings, "kickStopPreview").name("Stop");
           kick.add(this.settings, "kickBaseFreq", 40, 260, 1).name("Base Freq");
           kick.add(this.settings, "kickDecay", 0.05, 0.3, 0.005).name("Decay");
           kick.add(this.settings, "kickType", OSC_TYPES).name("Osc Type");
 
           const snare = gui.addFolder("Snare");
+          snare.add(this.settings, "snareMute").name("Mute");
+          snare.add(this.settings, "snareVolume", 0, 1.5, 0.01).name("Volume");
+          snare.add(this.settings, "snareLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("snare", v));
+          snare.add(this.settings, "snarePlayPreview").name("Play");
+          snare.add(this.settings, "snareStopPreview").name("Stop");
           snare.add(this.settings, "snareToneFreq", 80, 420, 1).name("Tone Freq");
           snare.add(this.settings, "snareNoiseFreq", 600, 5000, 10).name("Noise HPF");
           snare.add(this.settings, "snareDecay", 0.05, 0.22, 0.005).name("Decay");
           snare.add(this.settings, "snareType", OSC_TYPES).name("Osc Type");
 
           const hat = gui.addFolder("Hi-Hat");
+          hat.add(this.settings, "hatMute").name("Mute");
+          hat.add(this.settings, "hatVolume", 0, 1.5, 0.01).name("Volume");
+          hat.add(this.settings, "hatLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("hat", v));
+          hat.add(this.settings, "hatPlayPreview").name("Play");
+          hat.add(this.settings, "hatStopPreview").name("Stop");
           hat.add(this.settings, "hatFreq", 3000, 14000, 10).name("Filter Freq");
           hat.add(this.settings, "hatToneFreq", 1400, 11000, 10).name("Tone Freq");
           hat.add(this.settings, "hatDecay", 0.02, 0.18, 0.005).name("Decay");
           hat.add(this.settings, "hatType", OSC_TYPES).name("Osc Type");
 
           const bass = gui.addFolder("Bass Arp");
+          bass.add(this.settings, "bassMute").name("Mute");
+          bass.add(this.settings, "bassVolume", 0, 1.5, 0.01).name("Volume");
+          bass.add(this.settings, "bassLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("bass", v));
+          bass.add(this.settings, "bassPlayPreview").name("Play");
+          bass.add(this.settings, "bassStopPreview").name("Stop");
           bass.add(this.settings, "bassBaseFreq", 32, 110, 0.5).name("Base Freq");
           bass.add(this.settings, "bassFilter", 180, 2400, 10).name("Filter Base");
           bass.add(this.settings, "bassDecay", 0.08, 0.45, 0.005).name("Decay");
@@ -402,6 +443,110 @@
           const data = buffer.getChannelData(0);
           for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
           this.noiseBuffer = buffer;
+        }
+
+        getInstrumentLevel(name, level = 1) {
+          if (this.settings[`${name}Mute`]) return 0;
+          return Math.max(0, (this.settings[`${name}Volume`] ?? 1) * level);
+        }
+
+        handleBpmChange() {
+          this.horizon = this.settings.lookAhead;
+          for (const name of ["kick", "snare", "hat", "bass"]) {
+            const state = this.previewState[name];
+            if (state?.active && this.settings[`${name}Loop`]) this.startPreviewLoop(name);
+          }
+        }
+
+        handlePreviewLoopToggle(name, enabled) {
+          const state = this.previewState[name];
+          if (!state?.active) return;
+          if (enabled) this.startPreviewLoop(name);
+          else this.stopPreview(name);
+        }
+
+        getPreviewIntervalMs(name) {
+          const beat = 60000 / this.settings.bpm;
+          return {
+            kick: beat,
+            snare: beat * 2,
+            hat: beat / 2,
+            bass: beat / 2
+          }[name] || beat;
+        }
+
+        stopPreview(name) {
+          const state = this.previewState[name];
+          if (!state) return;
+          if (state.timer) clearInterval(state.timer);
+          state.timer = null;
+          state.active = false;
+          if (name === "bass") state.arpIndex = 0;
+        }
+
+        stopAllPreviews() {
+          for (const name of ["kick", "snare", "hat", "bass"]) this.stopPreview(name);
+        }
+
+        async previewSound(name) {
+          this.ensureAudio();
+          await this.ctx.resume();
+
+          if (this.running) return;
+
+          if (this.settings[`${name}Loop`]) {
+            this.startPreviewLoop(name);
+            return;
+          }
+
+          this.stopPreview(name);
+          this.triggerPreviewInstrument(name, this.ctx.currentTime + 0.01);
+        }
+
+        startPreviewLoop(name) {
+          this.stopPreview(name);
+          const state = this.previewState[name] || (this.previewState[name] = {});
+          state.active = true;
+
+          const fire = async () => {
+            if (!state.active || this.running) return;
+            this.ensureAudio();
+            await this.ctx.resume();
+            this.triggerPreviewInstrument(name, this.ctx.currentTime + 0.01);
+          };
+
+          fire();
+          state.timer = setInterval(fire, this.getPreviewIntervalMs(name));
+        }
+
+        triggerPreviewInstrument(name, time) {
+          if (name === "kick") {
+            this.triggerKick(time);
+            this.emitVisual("kick", this.settings.kickBaseFreq, this.settings.kickType, time);
+            return;
+          }
+
+          if (name === "snare") {
+            this.triggerSnare(time);
+            this.emitVisual("snare", this.settings.snareToneFreq, this.settings.snareType, time);
+            return;
+          }
+
+          if (name === "hat") {
+            this.triggerHat(time, false, 0.9);
+            this.emitVisual("hat", this.settings.hatToneFreq, this.settings.hatType, time);
+            return;
+          }
+
+          if (name === "bass") {
+            const state = this.previewState.bass || (this.previewState.bass = {});
+            const seq = [0, 7, 12, 7];
+            const semi = seq[state.arpIndex || 0];
+            state.arpIndex = ((state.arpIndex || 0) + 1) % seq.length;
+            const freq = this.semitoneToFreq(semi);
+            this.triggerBass(time, freq, 0.92, this.settings.bassDecay, this.settings.bassFilter);
+            this.emitVisual("bass", freq, this.settings.bassType1, time);
+          }
         }
 
         pick(list) {
@@ -593,31 +738,35 @@
         }
 
         triggerKick(time) {
+          const level = this.getInstrumentLevel("kick", 1);
+          if (!level) return;
           const o = this.ctx.createOscillator();
           const g = this.ctx.createGain();
           o.type = this.settings.kickType;
           o.frequency.setValueAtTime(this.settings.kickBaseFreq, time);
           o.frequency.exponentialRampToValueAtTime(Math.max(36, this.settings.kickBaseFreq * 0.28), time + this.settings.kickDecay);
-          this.expEnv(g.gain, time, [[1.2, 0], [0.001, this.settings.kickDecay]]);
+          this.expEnv(g.gain, time, [[1.2 * level, 0], [0.001, this.settings.kickDecay]]);
           o.connect(g).connect(this.master);
           o.start(time);
           o.stop(time + this.settings.kickDecay + 0.02);
         }
 
         triggerSnare(time) {
+          const level = this.getInstrumentLevel("snare", 1);
+          if (!level) return;
           const noise = this.ctx.createBufferSource();
           noise.buffer = this.noiseBuffer;
           const noiseFilter = this.ctx.createBiquadFilter();
           noiseFilter.type = "highpass";
           noiseFilter.frequency.setValueAtTime(this.settings.snareNoiseFreq, time);
           const noiseGain = this.ctx.createGain();
-          this.expEnv(noiseGain.gain, time, [[0.75, 0], [0.001, this.settings.snareDecay]]);
+          this.expEnv(noiseGain.gain, time, [[0.75 * level, 0], [0.001, this.settings.snareDecay]]);
 
           const tone = this.ctx.createOscillator();
           tone.type = this.settings.snareType;
           tone.frequency.setValueAtTime(this.settings.snareToneFreq, time);
           const toneGain = this.ctx.createGain();
-          this.expEnv(toneGain.gain, time, [[0.22, 0], [0.001, this.settings.snareDecay * 0.75]]);
+          this.expEnv(toneGain.gain, time, [[0.22 * level, 0], [0.001, this.settings.snareDecay * 0.75]]);
 
           noise.connect(noiseFilter).connect(noiseGain).connect(this.master);
           tone.connect(toneGain).connect(this.master);
@@ -628,6 +777,8 @@
         }
 
         triggerHat(time, open = false, level = 1) {
+          const amp = this.getInstrumentLevel("hat", level);
+          if (!amp) return;
           const noise = this.ctx.createBufferSource();
           noise.buffer = this.noiseBuffer;
           const hp = this.ctx.createBiquadFilter();
@@ -640,13 +791,13 @@
           bp.Q.value = 0.9;
 
           const noiseGain = this.ctx.createGain();
-          this.expEnv(noiseGain.gain, time, [[0.12 * level, 0], [0.001, open ? this.settings.hatDecay * 2.4 : this.settings.hatDecay]]);
+          this.expEnv(noiseGain.gain, time, [[0.12 * amp, 0], [0.001, open ? this.settings.hatDecay * 2.4 : this.settings.hatDecay]]);
 
           const tone = this.ctx.createOscillator();
           tone.type = this.settings.hatType;
           tone.frequency.setValueAtTime(this.settings.hatToneFreq, time);
           const toneGain = this.ctx.createGain();
-          this.expEnv(toneGain.gain, time, [[0.035 * level, 0], [0.001, open ? this.settings.hatDecay * 1.8 : this.settings.hatDecay * 0.7]]);
+          this.expEnv(toneGain.gain, time, [[0.035 * amp, 0], [0.001, open ? this.settings.hatDecay * 1.8 : this.settings.hatDecay * 0.7]]);
 
           noise.connect(hp).connect(bp).connect(noiseGain).connect(this.master);
           tone.connect(toneGain).connect(this.master);
@@ -658,6 +809,8 @@
         }
 
         triggerBass(time, freq, accent, len, filterBase) {
+          const level = this.getInstrumentLevel("bass", 1);
+          if (!level) return;
           const o1 = this.ctx.createOscillator();
           const o2 = this.ctx.createOscillator();
           const sub = this.ctx.createOscillator();
@@ -681,7 +834,7 @@
           filter.frequency.exponentialRampToValueAtTime(180 + filterBase * 0.28, time + len);
 
           const vca = this.ctx.createGain();
-          this.expEnv(vca.gain, time, [[0.0001, 0], [0.78 * accent, 0.012], [0.001, len]]);
+          this.expEnv(vca.gain, time, [[0.0001, 0], [0.78 * accent * level, 0.012], [0.001, len]]);
 
           o1.connect(mix);
           o2.connect(mix);
@@ -711,6 +864,7 @@
         }
 
         async play() {
+          this.stopAllPreviews();
           this.ensureAudio();
           await this.ctx.resume();
           this.syncMasterVolume();
@@ -743,6 +897,7 @@
           this.running = false;
           clearInterval(this.timer);
           this.timer = null;
+          this.stopAllPreviews();
           this.step = 0;
           this.bar = 0;
           this.nextTime = 0;
