@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Techno Track Visualizer</title>
+  <style>
+    :root {
+      --bg: #05070b;
+      --panel: rgba(8, 12, 20, 0.66);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --text: #d9e2ff;
+      --muted: #8fa4d8;
+      --accent: #8f6bff;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(circle at top, #10172b 0%, #06080f 35%, #030406 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    #app {
+      position: fixed;
+      inset: 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #hud {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      padding: 14px 16px;
+      min-width: 300px;
+      max-width: min(430px, calc(100vw - 32px));
+      border: 1px solid var(--panel-border);
+      border-radius: 16px;
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    #hud h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    #hud p {
+      margin: 0 0 8px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    #status, #patterns {
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #c7d2ff;
+      white-space: pre-wrap;
+    }
+
+    .legend {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      font-size: 11px;
+      color: #afc1f4;
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 6px;
+      vertical-align: -1px;
+    }
+
+    .kick::before { background: #ff5370; }
+    .snare::before { background: #ffd166; }
+    .hat::before { background: #3dd6ff; }
+    .bass::before { background: #9bff7a; }
+
+    .hint {
+      margin-top: 10px;
+      color: #93a6db;
+      font-size: 11px;
+    }
+
+    .lil-gui.root {
+      --background-color: rgba(9, 13, 22, 0.88);
+      --widget-color: rgba(27, 35, 58, 0.95);
+      --hover-color: rgba(42, 53, 86, 0.95);
+      --focus-color: rgba(66, 87, 140, 1);
+      --text-color: #d9e2ff;
+      --title-background-color: rgba(143, 107, 255, 0.18);
+      --title-text-color: #eef2ff;
+      --number-color: #8bcfff;
+      --string-color: #ffc8a9;
+      z-index: 20;
+    }
+
+
+    #gui {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 30;
+      pointer-events: auto;
+    }
+
+    @media (max-width: 720px) {
+      #hud {
+        min-width: 0;
+        max-width: calc(100vw - 24px);
+        left: 12px;
+        top: 12px;
+      }
+      #gui {
+        top: auto;
+        right: 12px;
+        bottom: 12px;
+        max-height: calc(100vh - 24px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="gui"></div>
+
+  <div id="hud">
+    <h1>Techno Track / Audio + Visual</h1>
+    <p>
+      One-file Web Audio sequencer with randomized old-school techno patterns,
+      lil-gui transport controls, and a Three.js incoming-track view.
+    </p>
+    <div id="status">Status: stopped</div>
+    <div id="patterns">Patterns: waiting to start…</div>
+    <div class="legend">
+      <span class="kick">Kick</span>
+      <span class="snare">Snare</span>
+      <span class="hat">Hat</span>
+      <span class="bass">Bass</span>
+    </div>
+    <div class="hint">Tip: press Play first to unlock audio, then tweak BPM, frequencies, and oscillator types live.</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js";
+    import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm";
+
+    (() => {
+      const OSC_TYPES = ["sine", "square", "sawtooth", "triangle"];
+      const statusEl = document.getElementById("status");
+      const patternsEl = document.getElementById("patterns");
+
+      class TechnoApp {
+        constructor() {
+          this.container = document.getElementById("app");
+          this.ctx = null;
+          this.master = null;
+          this.compressor = null;
+          this.noiseBuffer = null;
+          this.timer = null;
+          this.running = false;
+          this.startedAtLeastOnce = false;
+          this.step = 0;
+          this.bar = 0;
+          this.nextTime = 0;
+          this.currentBarPatterns = null;
+          this.horizon = 2.4;
+          this.lanes = { kick: -6, snare: -2, hat: 2, bass: 6 };
+          this.cues = [];
+          this.roadMarkers = [];
+          this.clockFallback = performance.now() * 0.001;
+
+          this.settings = {
+            bpm: 138,
+            masterVolume: 0.82,
+            lookAhead: 2.4,
+            kickBaseFreq: 150,
+            kickDecay: 0.14,
+            kickType: "sine",
+            snareToneFreq: 180,
+            snareNoiseFreq: 2200,
+            snareDecay: 0.13,
+            snareType: "triangle",
+            hatFreq: 9500,
+            hatToneFreq: 4200,
+            hatDecay: 0.05,
+            hatType: "square",
+            bassBaseFreq: 55,
+            bassFilter: 980,
+            bassDecay: 0.22,
+            bassType1: "sawtooth",
+            bassType2: "square",
+            visualSpeed: 64,
+            cubeWidth: 1.1,
+            cubeDepth: 1.8,
+            play: () => this.play(),
+            pause: () => this.pause(),
+            stop: () => this.stop(),
+            restart: () => this.restart()
+          };
+
+          this.initScene();
+          this.initGUI();
+          this.updateHUD();
+          this.animate();
+          window.addEventListener("resize", () => this.onResize());
+        }
+
+        initScene() {
+          this.scene = new THREE.Scene();
+          this.scene.fog = new THREE.FogExp2(0x05070b, 0.018);
+
+          this.camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 300);
+          this.camera.position.set(0, 7.5, 14);
+          this.camera.lookAt(0, 1.6, -40);
+
+          this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+          this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+          this.renderer.setSize(window.innerWidth, window.innerHeight);
+          this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+          this.container.appendChild(this.renderer.domElement);
+
+          const ambient = new THREE.AmbientLight(0x88aaff, 0.35);
+          this.scene.add(ambient);
+
+          const key = new THREE.DirectionalLight(0xd7e4ff, 1.6);
+          key.position.set(0, 14, 10);
+          this.scene.add(key);
+
+          const rim = new THREE.PointLight(0x8f6bff, 40, 120, 2.2);
+          rim.position.set(0, 8, -24);
+          this.scene.add(rim);
+
+          this.createEnvironment();
+        }
+
+        createEnvironment() {
+          const roadGeom = new THREE.PlaneGeometry(26, 220, 1, 1);
+          const roadMat = new THREE.MeshStandardMaterial({
+            color: 0x090d14,
+            roughness: 0.94,
+            metalness: 0.08,
+            emissive: 0x111827,
+            emissiveIntensity: 0.22
+          });
+          const road = new THREE.Mesh(roadGeom, roadMat);
+          road.rotation.x = -Math.PI / 2;
+          road.position.set(0, 0, -92);
+          this.scene.add(road);
+
+          const shoulderGeom = new THREE.PlaneGeometry(40, 220, 1, 1);
+          const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x04060b, roughness: 1, metalness: 0 });
+          const shoulder = new THREE.Mesh(shoulderGeom, shoulderMat);
+          shoulder.rotation.x = -Math.PI / 2;
+          shoulder.position.set(0, -0.02, -92);
+          this.scene.add(shoulder);
+
+          const laneGeom = new THREE.BoxGeometry(0.16, 0.03, 5.8);
+          const laneMat = new THREE.MeshStandardMaterial({
+            color: 0x6b88d7,
+            emissive: 0x3f63d0,
+            emissiveIntensity: 1.2,
+            roughness: 0.3,
+            metalness: 0.4
+          });
+
+          const laneXs = [-8, -4, 0, 4, 8];
+          for (const x of laneXs) {
+            for (let z = 12; z > -176; z -= 12) {
+              const lane = new THREE.Mesh(laneGeom, laneMat);
+              lane.position.set(x, 0.02, z - 6);
+              this.scene.add(lane);
+              this.roadMarkers.push(lane);
+            }
+          }
+
+          const railGeom = new THREE.BoxGeometry(0.18, 0.2, 220);
+          const railMat = new THREE.MeshStandardMaterial({
+            color: 0x25304f,
+            emissive: 0x3d5db6,
+            emissiveIntensity: 0.75,
+            roughness: 0.45,
+            metalness: 0.65
+          });
+          const leftRail = new THREE.Mesh(railGeom, railMat);
+          leftRail.position.set(-13.2, 0.12, -92);
+          this.scene.add(leftRail);
+          const rightRail = leftRail.clone();
+          rightRail.position.x = 13.2;
+          this.scene.add(rightRail);
+
+          const horizonGeom = new THREE.TorusGeometry(18, 0.16, 12, 64);
+          const horizonMat = new THREE.MeshBasicMaterial({ color: 0x4f6dff });
+          const ring = new THREE.Mesh(horizonGeom, horizonMat);
+          ring.position.set(0, 7, -78);
+          ring.rotation.x = Math.PI / 2;
+          this.scene.add(ring);
+
+          const starGeom = new THREE.BufferGeometry();
+          const starCount = 500;
+          const positions = new Float32Array(starCount * 3);
+          for (let i = 0; i < starCount; i++) {
+            positions[i * 3 + 0] = (Math.random() - 0.5) * 180;
+            positions[i * 3 + 1] = Math.random() * 70 + 8;
+            positions[i * 3 + 2] = -Math.random() * 200;
+          }
+          starGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+          const stars = new THREE.Points(
+            starGeom,
+            new THREE.PointsMaterial({ color: 0x9fb8ff, size: 0.25, sizeAttenuation: true })
+          );
+          this.scene.add(stars);
+        }
+
+        initGUI() {
+          const gui = new GUI({ container: document.getElementById("gui"), title: "Techno Controls" });
+          gui.add(this.settings, "play").name("Play");
+          gui.add(this.settings, "pause").name("Pause");
+          gui.add(this.settings, "stop").name("Stop");
+          gui.add(this.settings, "restart").name("Restart");
+          gui.add(this.settings, "bpm", 90, 180, 1).name("BPM");
+          gui.add(this.settings, "masterVolume", 0, 1, 0.01).name("Master Volume").onChange(() => this.syncMasterVolume());
+          gui.add(this.settings, "lookAhead", 1.2, 3.2, 0.05).name("Visual Horizon").onChange((v) => this.horizon = v);
+          gui.add(this.settings, "visualSpeed", 40, 90, 1).name("Track Speed");
+
+          const kick = gui.addFolder("Kick");
+          kick.add(this.settings, "kickBaseFreq", 40, 260, 1).name("Base Freq");
+          kick.add(this.settings, "kickDecay", 0.05, 0.3, 0.005).name("Decay");
+          kick.add(this.settings, "kickType", OSC_TYPES).name("Osc Type");
+
+          const snare = gui.addFolder("Snare");
+          snare.add(this.settings, "snareToneFreq", 80, 420, 1).name("Tone Freq");
+          snare.add(this.settings, "snareNoiseFreq", 600, 5000, 10).name("Noise HPF");
+          snare.add(this.settings, "snareDecay", 0.05, 0.22, 0.005).name("Decay");
+          snare.add(this.settings, "snareType", OSC_TYPES).name("Osc Type");
+
+          const hat = gui.addFolder("Hi-Hat");
+          hat.add(this.settings, "hatFreq", 3000, 14000, 10).name("Filter Freq");
+          hat.add(this.settings, "hatToneFreq", 1400, 11000, 10).name("Tone Freq");
+          hat.add(this.settings, "hatDecay", 0.02, 0.18, 0.005).name("Decay");
+          hat.add(this.settings, "hatType", OSC_TYPES).name("Osc Type");
+
+          const bass = gui.addFolder("Bass Arp");
+          bass.add(this.settings, "bassBaseFreq", 32, 110, 0.5).name("Base Freq");
+          bass.add(this.settings, "bassFilter", 180, 2400, 10).name("Filter Base");
+          bass.add(this.settings, "bassDecay", 0.08, 0.45, 0.005).name("Decay");
+          bass.add(this.settings, "bassType1", OSC_TYPES).name("Osc 1 Type");
+          bass.add(this.settings, "bassType2", OSC_TYPES).name("Osc 2 Type");
+
+          this.gui = gui;
+        }
+
+        ensureAudio() {
+          if (this.ctx && this.ctx.state !== "closed") return;
+          const AC = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AC();
+          this.compressor = this.ctx.createDynamicsCompressor();
+          this.compressor.threshold.value = -18;
+          this.compressor.knee.value = 18;
+          this.compressor.ratio.value = 4;
+          this.compressor.attack.value = 0.002;
+          this.compressor.release.value = 0.18;
+
+          this.master = this.ctx.createGain();
+          this.master.gain.value = this.settings.masterVolume;
+          this.master.connect(this.compressor);
+          this.compressor.connect(this.ctx.destination);
+
+          this.createNoiseBuffer();
+        }
+
+        syncMasterVolume() {
+          if (!this.master || !this.ctx) return;
+          this.master.gain.setTargetAtTime(this.settings.masterVolume, this.ctx.currentTime, 0.01);
+        }
+
+        createNoiseBuffer() {
+          const len = this.ctx.sampleRate * 0.6;
+          const buffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+          this.noiseBuffer = buffer;
+        }
+
+        pick(list) {
+          return list[(Math.random() * list.length) | 0];
+        }
+
+        mutate(pattern, chance = 0.08) {
+          const chars = pattern.split("");
+          for (let i = 0; i < chars.length; i++) {
+            if (Math.random() < chance) chars[i] = chars[i] === "x" ? "." : "x";
+          }
+          return chars.join("");
+        }
+
+        semitoneToFreq(semitones) {
+          return this.settings.bassBaseFreq * Math.pow(2, semitones / 12);
+        }
+
+        oscillatorColor(type, instrument) {
+          const base = {
+            sine: 0x5fcfff,
+            square: 0xff6f7d,
+            sawtooth: 0x8ef06d,
+            triangle: 0xffd45b
+          }[type] || 0xffffff;
+
+          const shift = { kick: 0.0, snare: 0.06, hat: -0.08, bass: 0.12 }[instrument] || 0;
+          const color = new THREE.Color(base);
+          const hsl = { h: 0, s: 0, l: 0 };
+          color.getHSL(hsl);
+          color.setHSL((hsl.h + shift + 1) % 1, Math.min(1, hsl.s + 0.08), Math.min(0.72, hsl.l + 0.02));
+          return color;
+        }
+
+        heightFromFreq(freq) {
+          const min = 35;
+          const max = 12000;
+          const value = (Math.log(freq) - Math.log(min)) / (Math.log(max) - Math.log(min));
+          return THREE.MathUtils.clamp(0.5 + value * 7.5, 0.5, 8.5);
+        }
+
+        emitVisual(instrument, freq, type, time) {
+          const height = this.heightFromFreq(freq);
+          const geometry = new THREE.BoxGeometry(this.settings.cubeWidth, height, this.settings.cubeDepth);
+          const color = this.oscillatorColor(type, instrument);
+          const material = new THREE.MeshStandardMaterial({
+            color,
+            emissive: color.clone().multiplyScalar(0.55),
+            emissiveIntensity: 1.3,
+            roughness: 0.22,
+            metalness: 0.6
+          });
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.position.set(this.lanes[instrument] || 0, height / 2, -140);
+          mesh.castShadow = false;
+          mesh.receiveShadow = false;
+          this.scene.add(mesh);
+          this.cues.push({ mesh, time, instrument, freq, type, height });
+        }
+
+        clearCues() {
+          for (const cue of this.cues) {
+            cue.mesh.geometry.dispose();
+            cue.mesh.material.dispose();
+            this.scene.remove(cue.mesh);
+          }
+          this.cues.length = 0;
+        }
+
+        makePatterns() {
+          const kickPool = [
+            "x...x...x...x...",
+            "x...x...x.x.x...",
+            "x...x.x.x...x...",
+            "x..xx...x...x...",
+            "x...x...x...x..x"
+          ];
+          const snarePool = [
+            "....x.......x...",
+            "....x...x...x...",
+            "....x.......x..x",
+            "....x.......xx.."
+          ];
+          const hatPool = [
+            ".x.x.x.x.x.x.x.x",
+            "..x...x...x...x.",
+            "..x.x.x...x.x.x.",
+            ".xx..x.x.xx..x.x"
+          ];
+          const bassPool = [
+            "x.x.x.x.x.x.x.x.",
+            "x...x.x.x...x.x.",
+            "x..xx..xx..xx..x",
+            "x.x...xxx.x...x.",
+            "x...x...xx..x.x."
+          ];
+          const progressions = [
+            [0, 0, 3, -2],
+            [0, 7, 3, 5],
+            [-2, -2, 3, 0],
+            [0, 3, -2, 5]
+          ];
+          const arps = [
+            [0, 7, 12, 7],
+            [0, 3, 7, 10],
+            [0, 7, 10, 12],
+            [12, 7, 0, 7],
+            [0, 12, 7, 15]
+          ];
+
+          this.bar += 1;
+          if (!this.progression || this.bar % 4 === 1) this.progression = this.pick(progressions);
+
+          const rootSemi = this.progression[(this.bar - 1) % this.progression.length];
+          let kick = this.mutate(this.pick(kickPool), 0.04);
+          const snare = this.mutate(this.pick(snarePool), 0.05);
+          const hat = this.mutate(this.pick(hatPool), 0.08);
+          const bass = this.mutate(this.pick(bassPool), 0.07);
+          const arp = this.pick(arps);
+
+          kick = "x..." + kick.slice(4, 12) + "x...";
+
+          const denseKick = (kick.match(/x/g) || []).length;
+          const bassAccent = denseKick > 4 ? 0.66 : 0.88;
+          const bassFilter = denseKick > 4 ? this.settings.bassFilter * 0.82 : this.settings.bassFilter * 1.08;
+
+          return { kick, snare, hat, bass, arp, rootSemi, bassAccent, bassFilter };
+        }
+
+        scheduleLoop() {
+          if (!this.ctx || !this.running) return;
+          const stepDur = 60 / this.settings.bpm / 4;
+          this.horizon = this.settings.lookAhead;
+
+          while (this.nextTime < this.ctx.currentTime + this.settings.lookAhead) {
+            const stepInBar = this.step % 16;
+            if (stepInBar === 0) {
+              this.currentBarPatterns = this.makePatterns();
+              this.updateHUD();
+            }
+            this.scheduleStep(stepInBar, this.nextTime);
+            this.nextTime += stepDur;
+            this.step += 1;
+          }
+        }
+
+        scheduleStep(stepInBar, time) {
+          const p = this.currentBarPatterns;
+          if (!p) return;
+
+          if (p.kick[stepInBar] === "x") {
+            this.triggerKick(time);
+            this.emitVisual("kick", this.settings.kickBaseFreq, this.settings.kickType, time);
+          }
+
+          if (p.snare[stepInBar] === "x") {
+            this.triggerSnare(time);
+            this.emitVisual("snare", this.settings.snareToneFreq, this.settings.snareType, time);
+          }
+
+          if (p.hat[stepInBar] === "x") {
+            const open = Math.random() < 0.14 && stepInBar % 4 !== 0;
+            this.triggerHat(time, open);
+            this.emitVisual("hat", this.settings.hatToneFreq, this.settings.hatType, time);
+          }
+
+          if (Math.random() < 0.05) {
+            const halfStep = time + (60 / this.settings.bpm / 8);
+            this.triggerHat(halfStep, false, 0.65);
+            this.emitVisual("hat", this.settings.hatToneFreq * 1.08, this.settings.hatType, halfStep);
+          }
+
+          if (p.bass[stepInBar] === "x") {
+            const semi = p.rootSemi + p.arp[stepInBar % p.arp.length] + (Math.random() < 0.12 ? -12 : 0);
+            const freq = this.semitoneToFreq(semi);
+            const accent = (stepInBar % 4 === 0 ? 1 : 0.72) * p.bassAccent;
+            const len = stepInBar % 2 === 0 ? this.settings.bassDecay : this.settings.bassDecay * 0.72;
+            this.triggerBass(time, freq, accent, len, p.bassFilter);
+            this.emitVisual("bass", freq, this.settings.bassType1, time);
+          }
+        }
+
+        expEnv(param, time, points) {
+          param.cancelScheduledValues(time);
+          param.setValueAtTime(Math.max(points[0][0], 0.0001), time);
+          for (let i = 1; i < points.length; i++) {
+            param.exponentialRampToValueAtTime(Math.max(points[i][0], 0.0001), time + points[i][1]);
+          }
+        }
+
+        triggerKick(time) {
+          const o = this.ctx.createOscillator();
+          const g = this.ctx.createGain();
+          o.type = this.settings.kickType;
+          o.frequency.setValueAtTime(this.settings.kickBaseFreq, time);
+          o.frequency.exponentialRampToValueAtTime(Math.max(36, this.settings.kickBaseFreq * 0.28), time + this.settings.kickDecay);
+          this.expEnv(g.gain, time, [[1.2, 0], [0.001, this.settings.kickDecay]]);
+          o.connect(g).connect(this.master);
+          o.start(time);
+          o.stop(time + this.settings.kickDecay + 0.02);
+        }
+
+        triggerSnare(time) {
+          const noise = this.ctx.createBufferSource();
+          noise.buffer = this.noiseBuffer;
+          const noiseFilter = this.ctx.createBiquadFilter();
+          noiseFilter.type = "highpass";
+          noiseFilter.frequency.setValueAtTime(this.settings.snareNoiseFreq, time);
+          const noiseGain = this.ctx.createGain();
+          this.expEnv(noiseGain.gain, time, [[0.75, 0], [0.001, this.settings.snareDecay]]);
+
+          const tone = this.ctx.createOscillator();
+          tone.type = this.settings.snareType;
+          tone.frequency.setValueAtTime(this.settings.snareToneFreq, time);
+          const toneGain = this.ctx.createGain();
+          this.expEnv(toneGain.gain, time, [[0.22, 0], [0.001, this.settings.snareDecay * 0.75]]);
+
+          noise.connect(noiseFilter).connect(noiseGain).connect(this.master);
+          tone.connect(toneGain).connect(this.master);
+          noise.start(time);
+          tone.start(time);
+          noise.stop(time + this.settings.snareDecay + 0.03);
+          tone.stop(time + this.settings.snareDecay * 0.75 + 0.03);
+        }
+
+        triggerHat(time, open = false, level = 1) {
+          const noise = this.ctx.createBufferSource();
+          noise.buffer = this.noiseBuffer;
+          const hp = this.ctx.createBiquadFilter();
+          hp.type = "highpass";
+          hp.frequency.setValueAtTime(this.settings.hatFreq * (open ? 0.72 : 1), time);
+
+          const bp = this.ctx.createBiquadFilter();
+          bp.type = "bandpass";
+          bp.frequency.setValueAtTime(this.settings.hatFreq, time);
+          bp.Q.value = 0.9;
+
+          const noiseGain = this.ctx.createGain();
+          this.expEnv(noiseGain.gain, time, [[0.12 * level, 0], [0.001, open ? this.settings.hatDecay * 2.4 : this.settings.hatDecay]]);
+
+          const tone = this.ctx.createOscillator();
+          tone.type = this.settings.hatType;
+          tone.frequency.setValueAtTime(this.settings.hatToneFreq, time);
+          const toneGain = this.ctx.createGain();
+          this.expEnv(toneGain.gain, time, [[0.035 * level, 0], [0.001, open ? this.settings.hatDecay * 1.8 : this.settings.hatDecay * 0.7]]);
+
+          noise.connect(hp).connect(bp).connect(noiseGain).connect(this.master);
+          tone.connect(toneGain).connect(this.master);
+
+          noise.start(time);
+          tone.start(time);
+          noise.stop(time + (open ? this.settings.hatDecay * 2.4 : this.settings.hatDecay) + 0.03);
+          tone.stop(time + (open ? this.settings.hatDecay * 1.8 : this.settings.hatDecay * 0.7) + 0.03);
+        }
+
+        triggerBass(time, freq, accent, len, filterBase) {
+          const o1 = this.ctx.createOscillator();
+          const o2 = this.ctx.createOscillator();
+          const sub = this.ctx.createOscillator();
+
+          o1.type = this.settings.bassType1;
+          o2.type = this.settings.bassType2;
+          sub.type = "sine";
+
+          o1.frequency.setValueAtTime(freq, time);
+          o2.frequency.setValueAtTime(freq * 1.003, time);
+          sub.frequency.setValueAtTime(freq * 0.5, time);
+
+          const mix = this.ctx.createGain();
+          mix.gain.value = 0.22;
+
+          const filter = this.ctx.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.Q.value = 10.5;
+          filter.frequency.setValueAtTime(filterBase * 0.7, time);
+          filter.frequency.exponentialRampToValueAtTime(filterBase + 1600 * accent, time + 0.03);
+          filter.frequency.exponentialRampToValueAtTime(180 + filterBase * 0.28, time + len);
+
+          const vca = this.ctx.createGain();
+          this.expEnv(vca.gain, time, [[0.0001, 0], [0.78 * accent, 0.012], [0.001, len]]);
+
+          o1.connect(mix);
+          o2.connect(mix);
+          sub.connect(mix);
+          mix.connect(filter).connect(vca).connect(this.master);
+
+          o1.start(time); o2.start(time); sub.start(time);
+          o1.stop(time + len + 0.03);
+          o2.stop(time + len + 0.03);
+          sub.stop(time + len + 0.03);
+        }
+
+        updateHUD() {
+          const state = this.running ? "playing" : (this.startedAtLeastOnce ? "paused / stopped" : "stopped");
+          statusEl.textContent = `Status: ${state} | BPM ${this.settings.bpm} | Bar ${this.bar}`;
+          if (!this.currentBarPatterns) {
+            patternsEl.textContent = "Patterns: waiting to start…";
+            return;
+          }
+          const p = this.currentBarPatterns;
+          patternsEl.textContent = [
+            `kick  ${p.kick}`,
+            `snare ${p.snare}`,
+            `hat   ${p.hat}`,
+            `bass  ${p.bass}`
+          ].join("\n");
+        }
+
+        async play() {
+          this.ensureAudio();
+          await this.ctx.resume();
+          this.syncMasterVolume();
+
+          if (this.running) return;
+
+          this.startedAtLeastOnce = true;
+          this.running = true;
+          this.horizon = this.settings.lookAhead;
+
+          if (!this.nextTime || this.nextTime < this.ctx.currentTime) {
+            this.nextTime = this.ctx.currentTime + 0.05;
+          }
+
+          clearInterval(this.timer);
+          this.timer = setInterval(() => this.scheduleLoop(), 25);
+          this.updateHUD();
+        }
+
+        async pause() {
+          if (!this.ctx || !this.running) return;
+          this.running = false;
+          clearInterval(this.timer);
+          this.timer = null;
+          await this.ctx.suspend();
+          this.updateHUD();
+        }
+
+        async stop() {
+          this.running = false;
+          clearInterval(this.timer);
+          this.timer = null;
+          this.step = 0;
+          this.bar = 0;
+          this.nextTime = 0;
+          this.currentBarPatterns = null;
+          this.progression = null;
+          this.clearCues();
+          if (this.ctx && this.ctx.state !== "closed") await this.ctx.close();
+          this.ctx = null;
+          this.master = null;
+          this.compressor = null;
+          this.noiseBuffer = null;
+          this.updateHUD();
+        }
+
+        async restart() {
+          await this.stop();
+          this.startedAtLeastOnce = false;
+          this.updateHUD();
+          this.play();
+        }
+
+        updateVisuals(now) {
+          const roadPulse = this.running ? 0.5 + 0.5 * Math.sin(now * (this.settings.bpm / 30)) : 0.18;
+          for (let i = 0; i < this.roadMarkers.length; i++) {
+            const marker = this.roadMarkers[i];
+            marker.material.emissiveIntensity = 0.45 + roadPulse * 0.85;
+          }
+
+          for (let i = this.cues.length - 1; i >= 0; i--) {
+            const cue = this.cues[i];
+            const dt = cue.time - now;
+            if (dt > this.horizon + 0.15) continue;
+            if (dt < -0.35) {
+              cue.mesh.geometry.dispose();
+              cue.mesh.material.dispose();
+              this.scene.remove(cue.mesh);
+              this.cues.splice(i, 1);
+              continue;
+            }
+
+            const t = THREE.MathUtils.clamp(1 - dt / this.horizon, 0, 1.15);
+            cue.mesh.position.z = -140 + t * this.settings.visualSpeed * this.horizon;
+            cue.mesh.rotation.y += 0.012 + (cue.instrument === "bass" ? 0.014 : 0.005);
+            cue.mesh.position.y = cue.height / 2 + Math.sin((now + i) * 5 + cue.freq * 0.002) * 0.08;
+
+            const scale = dt < 0 ? 1 + Math.abs(dt) * 2.2 : 1;
+            cue.mesh.scale.set(scale, 1 + Math.sin(now * 8 + i) * 0.02, scale);
+            cue.mesh.material.emissiveIntensity = dt < 0.05 ? 1.8 : 1.2;
+          }
+        }
+
+        animate() {
+          requestAnimationFrame(() => this.animate());
+          const now = (this.ctx && this.ctx.state !== "closed") ? this.ctx.currentTime : (this.clockFallback += 0.016);
+          this.updateVisuals(now);
+          this.renderer.render(this.scene, this.camera);
+        }
+
+        onResize() {
+          this.camera.aspect = window.innerWidth / window.innerHeight;
+          this.camera.updateProjectionMatrix();
+          this.renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+      }
+
+      window.technoApp = new TechnoApp();
+    })();
+  </script>
+</body>
+</html>
