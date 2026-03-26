@@ -165,9 +165,19 @@
     <div class="hint">Tip: press Play first to unlock audio, then tweak BPM, frequencies, and oscillator types live.</div>
   </div>
 
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+      }
+    }
+  </script>
+
   <script type="module">
 
-    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js";
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm";
 
     (() => {
@@ -179,6 +189,7 @@
         "ConeGeometry",
         "CylinderGeometry",
         "DodecahedronGeometry",
+        "EdgesGeometry",
         "ExtrudeGeometry",
         "IcosahedronGeometry",
         "LatheGeometry",
@@ -191,7 +202,8 @@
         "TetrahedronGeometry",
         "TorusGeometry",
         "TorusKnotGeometry",
-        "TubeGeometry"
+        "TubeGeometry",
+        "WireframeGeometry"
       ];
       const statusEl = document.getElementById("status");
       const patternsEl = document.getElementById("patterns");
@@ -229,6 +241,10 @@
           this.environmentGroup = null;
           this.tunnelShell = null;
           this.tunnelWire = null;
+          this.orbitControls = null;
+          this.ambientLight = null;
+          this.keyLight = null;
+          this.rimLight = null;
           this.clockFallback = performance.now() * 0.001;
           this.previewState = {};
           this.saveTimer = null;
@@ -329,6 +345,38 @@
             hatGeometry: "OctahedronGeometry",
             bassGeometry: "TorusGeometry",
             leadGeometry: "IcosahedronGeometry",
+            cameraUseOrbit: false,
+            cameraPosX: 0,
+            cameraPosY: 0.8,
+            cameraPosZ: 20,
+            cameraDistanceFromFront: 8,
+            cameraTargetX: 0,
+            cameraTargetY: 0,
+            cameraTargetZ: -50,
+            cameraFov: 60,
+            cameraStoreCurrent: () => this.captureCameraToSettings(true, true),
+            cameraReset: () => this.resetCamera(),
+            envBackgroundColor: "#05070b",
+            envFogColor: "#05070b",
+            envFogDensity: 0.018,
+            envAmbientColor: "#88aaff",
+            envAmbientIntensity: 0.35,
+            envKeyColor: "#d7e4ff",
+            envKeyIntensity: 1.6,
+            envRimColor: "#8f6bff",
+            envRimIntensity: 40,
+            envRimDistance: 120,
+            envRimDecay: 2.2,
+            envTunnelColor: "#090d14",
+            envTunnelEmissive: "#131c32",
+            envTunnelEmissiveIntensity: 0.28,
+            envWireColor: "#3552ad",
+            envWireOpacity: 0.35,
+            envMarkerColor: "#6b88d7",
+            envMarkerEmissive: "#3f63d0",
+            envMarkerOpacity: 0.92,
+            envRingColor: "#4f6dff",
+            envStarColor: "#9fb8ff",
             saveNow: () => this.persistSettings("manual-save"),
             exportJSON: () => this.exportSettings(),
             importJSON: () => this.importSettings(),
@@ -368,18 +416,109 @@
           this.renderer.outputColorSpace = THREE.SRGBColorSpace;
           this.container.appendChild(this.renderer.domElement);
 
-          const ambient = new THREE.AmbientLight(0x88aaff, 0.35);
-          this.scene.add(ambient);
+          this.ambientLight = new THREE.AmbientLight(0x88aaff, 0.35);
+          this.scene.add(this.ambientLight);
 
-          const key = new THREE.DirectionalLight(0xd7e4ff, 1.6);
-          key.position.set(0, 14, 10);
-          this.scene.add(key);
+          this.keyLight = new THREE.DirectionalLight(0xd7e4ff, 1.6);
+          this.keyLight.position.set(0, 14, 10);
+          this.scene.add(this.keyLight);
 
-          const rim = new THREE.PointLight(0x8f6bff, 40, 120, 2.2);
-          rim.position.set(0, 8, -24);
-          this.scene.add(rim);
+          this.rimLight = new THREE.PointLight(0x8f6bff, 40, 120, 2.2);
+          this.rimLight.position.set(0, 8, -24);
+          this.scene.add(this.rimLight);
 
+          this.orbitControls = new OrbitControls(this.camera, this.renderer.domElement);
+          this.orbitControls.enableDamping = true;
+          this.orbitControls.dampingFactor = 0.06;
+          this.orbitControls.enabled = false;
+          this.orbitControls.addEventListener("change", () => {
+            if (!this.settings.cameraUseOrbit) return;
+            this.captureCameraToSettings(false, true);
+          });
+
+          this.updateCameraFromSettings();
+          this.updateEnvironmentFromSettings();
           this.createEnvironment();
+        }
+
+        updateCameraFromSettings() {
+          if (!this.camera) return;
+          this.settings.cameraPosZ = this.getTunnelFrontZ() + this.settings.cameraDistanceFromFront;
+          this.camera.fov = this.settings.cameraFov;
+          this.camera.position.set(this.settings.cameraPosX, this.settings.cameraPosY, this.settings.cameraPosZ);
+          this.camera.updateProjectionMatrix();
+
+          if (this.orbitControls) {
+            this.orbitControls.enabled = !!this.settings.cameraUseOrbit;
+            this.orbitControls.target.set(
+              this.settings.cameraTargetX,
+              this.settings.cameraTargetY,
+              this.settings.cameraTargetZ
+            );
+            this.orbitControls.update();
+          } else {
+            this.camera.lookAt(this.settings.cameraTargetX, this.settings.cameraTargetY, this.settings.cameraTargetZ);
+          }
+        }
+
+        setCameraDistanceFromFront(distance) {
+          this.settings.cameraDistanceFromFront = distance;
+          this.settings.cameraPosZ = this.getTunnelFrontZ() + distance;
+          this.updateCameraFromSettings();
+        }
+
+        captureCameraToSettings(refreshGui = false, persist = true) {
+          if (!this.camera) return;
+          this.settings.cameraPosX = this.camera.position.x;
+          this.settings.cameraPosY = this.camera.position.y;
+          this.settings.cameraPosZ = this.camera.position.z;
+          this.settings.cameraDistanceFromFront = this.camera.position.z - this.getTunnelFrontZ();
+          if (this.orbitControls) {
+            this.settings.cameraTargetX = this.orbitControls.target.x;
+            this.settings.cameraTargetY = this.orbitControls.target.y;
+            this.settings.cameraTargetZ = this.orbitControls.target.z;
+          }
+          if (refreshGui) this.refreshGUI();
+          if (persist) this.schedulePersist("camera");
+        }
+
+        resetCamera() {
+          this.settings.cameraPosX = 0;
+          this.settings.cameraPosY = 0.8;
+          this.settings.cameraDistanceFromFront = 8;
+          this.settings.cameraTargetX = 0;
+          this.settings.cameraTargetY = 0;
+          this.settings.cameraTargetZ = -50;
+          this.settings.cameraFov = 60;
+          this.updateCameraFromSettings();
+          this.refreshGUI();
+          this.schedulePersist("camera-reset");
+        }
+
+        updateEnvironmentFromSettings({ rebuildTunnel = false } = {}) {
+          if (this.scene) {
+            this.scene.background = new THREE.Color(this.settings.envBackgroundColor);
+            if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(this.settings.envFogColor, this.settings.envFogDensity);
+            this.scene.fog.color.set(this.settings.envFogColor);
+            this.scene.fog.density = this.settings.envFogDensity;
+          }
+
+          if (this.ambientLight) {
+            this.ambientLight.color.set(this.settings.envAmbientColor);
+            this.ambientLight.intensity = this.settings.envAmbientIntensity;
+          }
+          if (this.keyLight) {
+            this.keyLight.color.set(this.settings.envKeyColor);
+            this.keyLight.intensity = this.settings.envKeyIntensity;
+          }
+          if (this.rimLight) {
+            this.rimLight.color.set(this.settings.envRimColor);
+            this.rimLight.intensity = this.settings.envRimIntensity;
+            this.rimLight.distance = this.settings.envRimDistance;
+            this.rimLight.decay = this.settings.envRimDecay;
+          }
+
+          if (rebuildTunnel) this.rebuildTunnelEnvironment();
         }
 
         createEnvironment() {
@@ -411,11 +550,11 @@
           shellGeom.rotateX(Math.PI / 2);
 
           const shellMat = new THREE.MeshStandardMaterial({
-            color: 0x090d14,
+            color: this.settings.envTunnelColor,
             roughness: 0.92,
             metalness: 0.18,
-            emissive: 0x131c32,
-            emissiveIntensity: 0.28,
+            emissive: this.settings.envTunnelEmissive,
+            emissiveIntensity: this.settings.envTunnelEmissiveIntensity,
             side: THREE.BackSide,
             transparent: true,
             opacity: 0.98
@@ -426,7 +565,7 @@
 
           const wire = new THREE.LineSegments(
             new THREE.EdgesGeometry(shellGeom, 12),
-            new THREE.LineBasicMaterial({ color: 0x3552ad, transparent: true, opacity: 0.35 })
+            new THREE.LineBasicMaterial({ color: this.settings.envWireColor, transparent: true, opacity: this.settings.envWireOpacity })
             );
           wire.position.copy(this.tunnelShell.position);
           this.tunnelWire = wire;
@@ -444,13 +583,13 @@
               const marker = new THREE.Mesh(
                 markerGeom,
                 new THREE.MeshStandardMaterial({
-                  color: 0x6b88d7,
-                  emissive: 0x3f63d0,
+                  color: this.settings.envMarkerColor,
+                  emissive: this.settings.envMarkerEmissive,
                   emissiveIntensity: 0.9,
                   roughness: 0.28,
                   metalness: 0.48,
                   transparent: true,
-                  opacity: 0.92,
+                  opacity: this.settings.envMarkerOpacity,
                   side: THREE.DoubleSide
                 })
                 );
@@ -462,7 +601,7 @@
 
           const frontRing = new THREE.Mesh(
             new THREE.TorusGeometry(radius, 0.18, 12, 96, this.settings.tunnelThetaLength),
-            new THREE.MeshBasicMaterial({ color: 0x4f6dff, transparent: true, opacity: 0.85 })
+            new THREE.MeshBasicMaterial({ color: this.settings.envRingColor, transparent: true, opacity: 0.85 })
             );
           frontRing.position.set(0, 0, this.getTunnelFrontZ());
           frontRing.rotation.z = this.settings.tunnelThetaStart;
@@ -485,7 +624,7 @@
           starGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
           const stars = new THREE.Points(
             starGeom,
-            new THREE.PointsMaterial({ color: 0x9fb8ff, size: 0.25, sizeAttenuation: true })
+            new THREE.PointsMaterial({ color: this.settings.envStarColor, size: 0.25, sizeAttenuation: true })
             );
           this.environmentGroup.add(stars);
         }
@@ -661,6 +800,41 @@ initGUI() {
   tunnel.add(this.settings, "cubeWidth", 0.3, 3, 0.05).name("Hit Width");
   tunnel.add(this.settings, "cubeDepth", 0.2, 4, 0.05).name("Hit Depth");
 
+  const camera = gui.addFolder("Camera");
+  camera.add(this.settings, "cameraUseOrbit").name("Orbit Controls").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraDistanceFromFront", -80, 120, 0.1).name("Distance From End").onChange((v) => this.setCameraDistanceFromFront(v));
+  camera.add(this.settings, "cameraPosX", -80, 80, 0.1).name("Camera X").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraPosY", -40, 40, 0.1).name("Camera Y").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraTargetX", -80, 80, 0.1).name("Target X").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraTargetY", -40, 40, 0.1).name("Target Y").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraTargetZ", -260, 80, 0.1).name("Target Z").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraFov", 20, 110, 1).name("FOV").onChange(() => this.updateCameraFromSettings());
+  camera.add(this.settings, "cameraStoreCurrent").name("Store Current View");
+  camera.add(this.settings, "cameraReset").name("Reset View");
+
+  const environment = gui.addFolder("Environment");
+  environment.addColor(this.settings, "envBackgroundColor").name("Background").onChange(() => this.updateEnvironmentFromSettings());
+  environment.addColor(this.settings, "envFogColor").name("Fog Color").onChange(() => this.updateEnvironmentFromSettings());
+  environment.add(this.settings, "envFogDensity", 0, 0.08, 0.0005).name("Fog Density").onChange(() => this.updateEnvironmentFromSettings());
+  environment.addColor(this.settings, "envAmbientColor").name("Ambient Color").onChange(() => this.updateEnvironmentFromSettings());
+  environment.add(this.settings, "envAmbientIntensity", 0, 4, 0.01).name("Ambient Intensity").onChange(() => this.updateEnvironmentFromSettings());
+  environment.addColor(this.settings, "envKeyColor").name("Key Color").onChange(() => this.updateEnvironmentFromSettings());
+  environment.add(this.settings, "envKeyIntensity", 0, 8, 0.01).name("Key Intensity").onChange(() => this.updateEnvironmentFromSettings());
+  environment.addColor(this.settings, "envRimColor").name("Rim Color").onChange(() => this.updateEnvironmentFromSettings());
+  environment.add(this.settings, "envRimIntensity", 0, 80, 0.1).name("Rim Intensity").onChange(() => this.updateEnvironmentFromSettings());
+  environment.add(this.settings, "envRimDistance", 10, 220, 1).name("Rim Distance").onChange(() => this.updateEnvironmentFromSettings());
+  environment.add(this.settings, "envRimDecay", 0.5, 4, 0.01).name("Rim Decay").onChange(() => this.updateEnvironmentFromSettings());
+  environment.addColor(this.settings, "envTunnelColor").name("Tunnel Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envTunnelEmissive").name("Tunnel Emissive").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envTunnelEmissiveIntensity", 0, 2, 0.01).name("Tunnel Glow").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envWireColor").name("Wire Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envWireOpacity", 0, 1, 0.01).name("Wire Opacity").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envMarkerColor").name("Marker Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envMarkerEmissive").name("Marker Glow").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envMarkerOpacity", 0, 1, 0.01).name("Marker Opacity").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envRingColor").name("Ring Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envStarColor").name("Stars Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+
   const fx = gui.addFolder("Master FX");
   fx.add(this.settings, "fxDrive", 0, 1, 0.01).name("Drive").onChange(refreshFX);
   fx.add(this.settings, "fxHighpassFreq", 20, 800, 1).name("HPF Freq").onChange(refreshFX);
@@ -765,6 +939,8 @@ handleGuiChange(event) {
   if (/Mute$/.test(property)) this.updateCueMuteStates();
   if (property === "masterVolume") this.syncMasterVolume();
   if (property.startsWith("fx")) this.syncMasterEffects();
+  if (property.startsWith("camera")) this.updateCameraFromSettings();
+  if (property.startsWith("env")) this.updateEnvironmentFromSettings({ rebuildTunnel: /(Tunnel|Wire|Marker|Ring|Star)/.test(property) });
   if (property.startsWith("tunnel") || property.endsWith("Geometry")) this.rebuildTunnelEnvironment();
   this.schedulePersist("autosave");
 }
@@ -798,6 +974,9 @@ applySettings(payload, { persist = true } = {}) {
   }
 
   this.horizon = this.settings.lookAhead;
+  this.settings.cameraDistanceFromFront = this.settings.cameraPosZ - this.getTunnelFrontZ();
+  this.updateCameraFromSettings();
+  this.updateEnvironmentFromSettings();
   this.rebuildTunnelEnvironment();
   this.syncMasterVolume();
   this.syncMasterEffects();
@@ -1296,33 +1475,57 @@ heightFromFreq(freq) {
   return THREE.MathUtils.clamp(0.5 + value * 7.5, 0.5, 8.5);
 }
 
-createCueVisual(instrument, type, geometry) {
+createCueVisual(instrument, type, geometry, shapeName = "BoxGeometry") {
   const color = this.oscillatorColor(type, instrument);
+  const lineOnlyMode = shapeName === "EdgesGeometry" || shapeName === "WireframeGeometry";
+
   const solidMaterial = new THREE.MeshStandardMaterial({
     color,
     emissive: color.clone().multiplyScalar(0.55),
     emissiveIntensity: 1.3,
     roughness: 0.22,
     metalness: 0.6,
-    side: THREE.DoubleSide
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: lineOnlyMode ? 0 : 1
   });
   const solidMesh = new THREE.Mesh(geometry, solidMaterial);
+  solidMesh.visible = !lineOnlyMode;
 
-  const edgeGeometry = new THREE.EdgesGeometry(geometry);
-  const edgeMaterial = new THREE.LineBasicMaterial({ color });
-  const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+  const lineGeometry = shapeName === "WireframeGeometry"
+    ? new THREE.WireframeGeometry(geometry)
+    : new THREE.EdgesGeometry(geometry);
+  const edgeMaterial = new THREE.LineBasicMaterial({
+    color,
+    transparent: true,
+    opacity: lineOnlyMode ? 0.95 : 1
+  });
+  const edgeLines = new THREE.LineSegments(lineGeometry, edgeMaterial);
+  edgeLines.visible = lineOnlyMode;
 
   const group = new THREE.Group();
   group.add(solidMesh);
   group.add(edgeLines);
 
-  return { color, group, solidMesh, solidMaterial, edgeLines, edgeGeometry, edgeMaterial };
+  return {
+    color,
+    group,
+    solidMesh,
+    solidMaterial,
+    edgeLines,
+    edgeGeometry: lineGeometry,
+    edgeMaterial,
+    displayMode: lineOnlyMode ? shapeName : "solid"
+  };
 }
 
 setCueMutedState(cue, muted) {
   cue.muted = muted;
-  cue.solidMesh.visible = !muted;
-  cue.edgeLines.visible = muted;
+  const lineOnlyMode = cue.displayMode === "EdgesGeometry" || cue.displayMode === "WireframeGeometry";
+  cue.solidMesh.visible = lineOnlyMode ? false : !muted;
+  cue.edgeLines.visible = lineOnlyMode ? true : muted;
+  if (cue.edgeMaterial) cue.edgeMaterial.opacity = lineOnlyMode ? (muted ? 1 : 0.95) : (muted ? 1 : 0);
+  if (cue.solidMaterial && !lineOnlyMode) cue.solidMaterial.opacity = muted ? 0 : 1;
 }
 
 updateCueMuteStates() {
@@ -1337,8 +1540,8 @@ emitVisual(instrument, freq, type, time) {
   const geometry = this.createHitGeometry(shapeName, this.settings.cubeWidth, height, this.settings.cubeDepth);
   geometry.computeBoundingBox();
   geometry.center();
-  const cueVisual = this.createCueVisual(instrument, type, geometry);
-  const { group, solidMesh, solidMaterial, edgeLines, edgeGeometry, edgeMaterial } = cueVisual;
+  const cueVisual = this.createCueVisual(instrument, type, geometry, shapeName);
+  const { group, solidMesh, solidMaterial, edgeLines, edgeGeometry, edgeMaterial, displayMode } = cueVisual;
 
   group.castShadow = false;
   group.receiveShadow = false;
@@ -1358,6 +1561,7 @@ emitVisual(instrument, freq, type, time) {
     type,
     height,
     shapeName,
+    displayMode,
     muted: !!this.settings[`${instrument}Mute`]
   };
   this.setCueMutedState(cue, cue.muted);
@@ -1812,6 +2016,7 @@ animate() {
   requestAnimationFrame(() => this.animate());
   const now = (this.ctx && this.ctx.state !== "closed") ? this.ctx.currentTime : (this.clockFallback += 0.016);
   this.updateVisuals(now);
+  if (this.orbitControls) this.orbitControls.update();
   this.renderer.render(this.scene, this.camera);
 }
 
