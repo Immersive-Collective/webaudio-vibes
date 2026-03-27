@@ -52,6 +52,39 @@
       z-index: 10;
     }
 
+    #scorePanel {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 420px;
+      max-width: min(860px, calc(100vw - 40px));
+      padding: 10px 14px;
+      border: 1px solid var(--panel-border);
+      border-radius: 16px;
+      background: rgba(8, 12, 20, 0.74);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      z-index: 15;
+      pointer-events: none;
+      text-align: center;
+    }
+
+    #scorePanel .total {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: #ffffff;
+      margin-bottom: 4px;
+    }
+
+    #scorePanel .meta {
+      font-size: 12px;
+      color: #a9bfff;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
     #hud h1 {
       margin: 0 0 8px;
       font-size: 18px;
@@ -66,7 +99,7 @@
       color: var(--muted);
     }
 
-    #status, #patterns, #storage {
+    #status, #patterns, #storage, #score, #xrstatus {
       margin-top: 10px;
       font-size: 12px;
       line-height: 1.45;
@@ -97,7 +130,9 @@
     .snare::before { background: #ffd166; }
     .hat::before { background: #3dd6ff; }
     .bass::before { background: #9bff7a; }
+    .bass2::before { background: #4effc3; }
     .lead::before { background: #b57cff; }
+    .lead2::before { background: #ff8af2; }
 
     .hint {
       margin-top: 10px;
@@ -131,7 +166,12 @@
         min-width: 0;
         max-width: calc(100vw - 24px);
         left: 12px;
+        top: 72px;
+      }
+      #scorePanel {
         top: 12px;
+        min-width: 0;
+        width: calc(100vw - 24px);
       }
       #gui {
         top: auto;
@@ -145,6 +185,7 @@
 <body>
   <div id="app"></div>
   <div id="gui"></div>
+  <div id="scorePanel"></div>
 
   <div id="hud">
     <h1>Techno Track / Audio + Visual</h1>
@@ -154,13 +195,17 @@
     </p>
     <div id="status">Status: stopped</div>
     <div id="patterns">Patterns: waiting to start…</div>
+    <div id="score">Score: 0</div>
+    <div id="xrstatus">XR: ready</div>
     <div id="storage">Storage: not loaded yet</div>
     <div class="legend">
       <span class="kick">Kick</span>
       <span class="snare">Snare</span>
       <span class="hat">Hat</span>
-      <span class="bass">Bass</span>
-      <span class="lead">Lead</span>
+      <span class="bass">Bass 1</span>
+      <span class="bass2">Bass 2</span>
+      <span class="lead">Lead 1</span>
+      <span class="lead2">Lead 2</span>
     </div>
     <div class="hint">Tip: press Play first to unlock audio, then tweak BPM, frequencies, and oscillator types live.</div>
   </div>
@@ -178,6 +223,7 @@
 
     import * as THREE from "three";
     import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { VRButton } from "three/addons/webxr/VRButton.js";
     import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm";
 
     (() => {
@@ -207,6 +253,9 @@
       ];
       const statusEl = document.getElementById("status");
       const patternsEl = document.getElementById("patterns");
+      const scoreEl = document.getElementById("score");
+      const scorePanelEl = document.getElementById("scorePanel");
+      const xrStatusEl = document.getElementById("xrstatus");
       const storageEl = document.getElementById("storage");
 
       class TechnoApp {
@@ -234,17 +283,34 @@
           this.nextTime = 0;
           this.currentBarPatterns = null;
           this.horizon = 2.4;
-          this.instrumentOrder = ["kick", "snare", "hat", "bass", "lead"];
+          this.instrumentOrder = ["kick", "snare", "hat", "bass", "bass2", "lead", "lead2"];
           this.laneAngles = {};
           this.cues = [];
           this.roadMarkers = [];
           this.environmentGroup = null;
           this.tunnelShell = null;
           this.tunnelWire = null;
+          this.starGroup = null;
+          this.starPoints = null;
+          this.starTrails = null;
+          this.starData = [];
+          this.collectorGroup = null;
+          this.collectorLaneIndex = 0;
+          this.collectorZ = 0;
+          this.collectorScore = 0;
+          this.projectiles = [];
+          this.projectileGroup = null;
+          this.explosions = [];
+          this.explosionGroup = null;
+          this.lastShotTime = 0;
+          this.collectorBreakdown = { kick: 0, snare: 0, hat: 0, bass: 0, bass2: 0, lead: 0, lead2: 0 };
+          this.instrumentValues = { kick: 10, snare: 14, hat: 8, bass: 20, bass2: 24, lead: 32, lead2: 36 };
           this.orbitControls = null;
           this.ambientLight = null;
           this.keyLight = null;
           this.rimLight = null;
+          this.xrButton = null;
+          this.xrSupported = false;
           this.clockFallback = performance.now() * 0.001;
           this.previewState = {};
           this.saveTimer = null;
@@ -279,6 +345,7 @@
             fxCompAttack: 0.002,
             fxCompRelease: 0.18,
             kickMute: false,
+            kickSolo: false,
             kickVolume: 1,
             kickLoop: false,
             kickPlayPreview: () => this.previewSound("kick"),
@@ -287,6 +354,7 @@
             kickDecay: 0.14,
             kickType: "sine",
             snareMute: false,
+            snareSolo: false,
             snareVolume: 0.95,
             snareLoop: false,
             snarePlayPreview: () => this.previewSound("snare"),
@@ -296,6 +364,7 @@
             snareDecay: 0.13,
             snareType: "triangle",
             hatMute: false,
+            hatSolo: false,
             hatVolume: 0.75,
             hatLoop: false,
             hatPlayPreview: () => this.previewSound("hat"),
@@ -314,6 +383,18 @@
             bassDecay: 0.22,
             bassType1: "sawtooth",
             bassType2: "square",
+            bassSolo: false,
+            bass2Mute: false,
+            bass2Volume: 0.86,
+            bass2Loop: false,
+            bass2PlayPreview: () => this.previewSound("bass2"),
+            bass2StopPreview: () => this.stopPreview("bass2"),
+            bass2BaseFreq: 82.5,
+            bass2Filter: 1450,
+            bass2Decay: 0.18,
+            bass2Type1: "triangle",
+            bass2Type2: "sawtooth",
+            bass2Solo: false,
             leadMute: false,
             leadVolume: 0.68,
             leadLoop: false,
@@ -326,6 +407,20 @@
             leadOctave: 1,
             leadType1: "triangle",
             leadType2: "sawtooth",
+            leadSolo: false,
+            lead2Mute: false,
+            lead2Volume: 0.56,
+            lead2Loop: false,
+            lead2PlayPreview: () => this.previewSound("lead2"),
+            lead2StopPreview: () => this.stopPreview("lead2"),
+            lead2BaseFreq: 330,
+            lead2Filter: 3600,
+            lead2Decay: 1.35,
+            lead2Glide: 0.045,
+            lead2Octave: 2,
+            lead2Type1: "sine",
+            lead2Type2: "triangle",
+            lead2Solo: false,
             visualSpeed: 64,
             tunnelRadius: 14,
             tunnelHeight: 240,
@@ -344,7 +439,9 @@
             snareGeometry: "CylinderGeometry",
             hatGeometry: "OctahedronGeometry",
             bassGeometry: "TorusGeometry",
+            bass2Geometry: "TorusKnotGeometry",
             leadGeometry: "IcosahedronGeometry",
+            lead2Geometry: "SphereGeometry",
             cameraUseOrbit: false,
             cameraPosX: 0,
             cameraPosY: 0.8,
@@ -377,6 +474,34 @@
             envMarkerOpacity: 0.92,
             envRingColor: "#4f6dff",
             envStarColor: "#9fb8ff",
+            envStarColor2: "#ff8cf3",
+            envStarSpeed: 36,
+            envStarCount: 600,
+            envStarSpread: 200,
+            envStarSize: 0.28,
+            envStarOpacity: 0.9,
+            envStarTrail: 3.2,
+            envStarRainbow: true,
+            collectorEnabled: true,
+            collectorRadius: 1.15,
+            collectorTube: 0.11,
+            collectorColor: "#ffffff",
+            collectorGlow: "#4fd1ff",
+            collectorRotationX: 0,
+            collectorRotationY: 0,
+            collectorRotationZ: 0,
+            collectorSpinSpeed: 0.8,
+            collectorHitWindow: 1.8,
+            collectorShootingMode: true,
+            collectorShootSpeed: 96,
+            collectorShootCooldown: 0.12,
+            collectorBulletSize: 0.34,
+            collectorBulletColor: "#ffffff",
+            collectorBulletGeometry: "random",
+            collectorExplosionSize: 2.4,
+            collectorExplosionDuration: 0.22,
+            collectorShoot: () => this.shootCollector(),
+            xrEnterVR: () => this.enterVR(),
             saveNow: () => this.persistSettings("manual-save"),
             exportJSON: () => this.exportSettings(),
             importJSON: () => this.importSettings(),
@@ -414,6 +539,8 @@
           this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
           this.renderer.setSize(window.innerWidth, window.innerHeight);
           this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+          this.renderer.xr.enabled = true;
+          this.renderer.xr.setReferenceSpaceType("local-floor");
           this.container.appendChild(this.renderer.domElement);
 
           this.ambientLight = new THREE.AmbientLight(0x88aaff, 0.35);
@@ -439,6 +566,12 @@
           this.updateCameraFromSettings();
           this.updateEnvironmentFromSettings();
           this.createEnvironment();
+          this.projectileGroup = new THREE.Group();
+          this.explosionGroup = new THREE.Group();
+          this.scene.add(this.projectileGroup);
+          this.scene.add(this.explosionGroup);
+          this.setupXR();
+          window.addEventListener("keydown", (event) => this.handleKeydown(event));
         }
 
         updateCameraFromSettings() {
@@ -531,6 +664,7 @@
           this.scene.add(this.environmentGroup);
           this.roadMarkers = [];
           this.computeLaneAngles();
+          this.collectorZ = this.getTunnelFrontZ() + 0.3;
 
           const radius = this.settings.tunnelRadius;
           const height = this.settings.tunnelHeight;
@@ -613,20 +747,350 @@
           backRing.material.opacity = 0.35;
           this.environmentGroup.add(backRing);
 
-          const starGeom = new THREE.BufferGeometry();
-          const starCount = 500;
-          const positions = new Float32Array(starCount * 3);
-          for (let i = 0; i < starCount; i++) {
-            positions[i * 3 + 0] = (Math.random() - 0.5) * 180;
-            positions[i * 3 + 1] = (Math.random() - 0.5) * 180;
-            positions[i * 3 + 2] = -Math.random() * 240;
+          this.createStarField();
+          this.createCollector();
+        }
+
+        createStarField() {
+          if (this.starGroup) {
+            this.disposeObject3D(this.starGroup);
+            this.environmentGroup.remove(this.starGroup);
           }
+
+          const count = Math.max(32, Math.floor(this.settings.envStarCount));
+          const spread = Math.max(20, this.settings.envStarSpread);
+          this.starGroup = new THREE.Group();
+          this.starData = [];
+
+          const positions = new Float32Array(count * 3);
+          const colors = new Float32Array(count * 3);
+          const trailPositions = new Float32Array(count * 6);
+          const trailColors = new Float32Array(count * 6);
+          const c1 = new THREE.Color(this.settings.envStarColor);
+          const c2 = new THREE.Color(this.settings.envStarColor2 || this.settings.envStarColor);
+
+          for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const radius = spread * (0.35 + Math.random() * 0.7);
+            const x = Math.cos(angle) * radius;
+            const y = Math.sin(angle) * radius;
+            const z = this.getTunnelBackZ() - Math.random() * (this.settings.tunnelHeight + 120);
+            const speed = this.settings.envStarSpeed * (0.5 + Math.random() * 1.15);
+            const color = this.settings.envStarRainbow
+            ? c1.clone().lerp(c2, Math.random()).offsetHSL(Math.random() * 0.12, 0, 0)
+            : c1.clone().lerp(c2, Math.random() * 0.35);
+            this.starData.push({ x, y, z, speed, color });
+            positions.set([x, y, z], i * 3);
+            colors.set([color.r, color.g, color.b], i * 3);
+            trailPositions.set([x, y, z, x, y, z - this.settings.envStarTrail], i * 6);
+            trailColors.set([color.r, color.g, color.b, color.r, color.g, color.b], i * 6);
+          }
+
+          const starGeom = new THREE.BufferGeometry();
           starGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-          const stars = new THREE.Points(
-            starGeom,
-            new THREE.PointsMaterial({ color: this.settings.envStarColor, size: 0.25, sizeAttenuation: true })
+          starGeom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+          const starMat = new THREE.PointsMaterial({
+            size: this.settings.envStarSize,
+            sizeAttenuation: true,
+            transparent: true,
+            opacity: this.settings.envStarOpacity,
+            vertexColors: true
+          });
+          this.starPoints = new THREE.Points(starGeom, starMat);
+          this.starGroup.add(this.starPoints);
+
+          const trailGeom = new THREE.BufferGeometry();
+          trailGeom.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
+          trailGeom.setAttribute("color", new THREE.BufferAttribute(trailColors, 3));
+          const trailMat = new THREE.LineBasicMaterial({
+            vertexColors: true,
+            transparent: true,
+            opacity: Math.min(1, this.settings.envStarOpacity * 0.55)
+          });
+          this.starTrails = new THREE.LineSegments(trailGeom, trailMat);
+          this.starGroup.add(this.starTrails);
+          this.environmentGroup.add(this.starGroup);
+        }
+
+        updateStarField(delta) {
+          if (!this.starPoints || !this.starTrails || !this.starData.length) return;
+          const spread = Math.max(20, this.settings.envStarSpread);
+          const frontReset = this.getTunnelFrontZ() + 24;
+          const backReset = this.getTunnelBackZ() - this.settings.tunnelHeight * 0.35;
+          const trailLen = Math.max(0.2, this.settings.envStarTrail);
+          const pos = this.starPoints.geometry.attributes.position.array;
+          const trail = this.starTrails.geometry.attributes.position.array;
+          for (let i = 0; i < this.starData.length; i++) {
+            const s = this.starData[i];
+            s.z += s.speed * delta;
+            if (s.z > frontReset) {
+              const angle = Math.random() * Math.PI * 2;
+              const radius = spread * (0.35 + Math.random() * 0.7);
+              s.x = Math.cos(angle) * radius;
+              s.y = Math.sin(angle) * radius;
+              s.z = backReset - Math.random() * (this.settings.tunnelHeight + 80);
+              s.speed = this.settings.envStarSpeed * (0.5 + Math.random() * 1.15);
+            }
+            pos[i * 3 + 0] = s.x;
+            pos[i * 3 + 1] = s.y;
+            pos[i * 3 + 2] = s.z;
+            trail[i * 6 + 0] = s.x;
+            trail[i * 6 + 1] = s.y;
+            trail[i * 6 + 2] = s.z;
+            trail[i * 6 + 3] = s.x;
+            trail[i * 6 + 4] = s.y;
+            trail[i * 6 + 5] = s.z - trailLen;
+          }
+          this.starPoints.geometry.attributes.position.needsUpdate = true;
+          this.starTrails.geometry.attributes.position.needsUpdate = true;
+        }
+
+        createCollector() {
+          if (this.collectorGroup) {
+            this.scene.remove(this.collectorGroup);
+            this.disposeObject3D(this.collectorGroup);
+          }
+          this.collectorGroup = new THREE.Group();
+          const torusGeometry = new THREE.TorusGeometry(this.settings.collectorRadius, this.settings.collectorTube, 12, 48);
+          const ring = new THREE.Mesh(
+            torusGeometry,
+            new THREE.MeshStandardMaterial({
+              color: this.settings.collectorColor,
+              emissive: this.settings.collectorGlow,
+              emissiveIntensity: 1.25,
+              metalness: 0.55,
+              roughness: 0.2,
+              transparent: true,
+              opacity: this.settings.collectorEnabled ? 0.96 : 0.18
+            })
             );
-          this.environmentGroup.add(stars);
+          const wire = new THREE.LineSegments(
+            new THREE.EdgesGeometry(torusGeometry),
+            new THREE.LineBasicMaterial({ color: this.settings.collectorGlow, transparent: true, opacity: 0.95 })
+            );
+          this.collectorGroup.add(ring);
+          this.collectorGroup.add(wire);
+          this.collectorMesh = ring;
+          this.collectorWire = wire;
+          this.scene.add(this.collectorGroup);
+          this.applyCollectorVisualRotation();
+          this.updateCollectorPosition(true);
+        }
+
+        applyCollectorVisualRotation(extraSpin = 0) {
+          if (!this.collectorMesh || !this.collectorWire) return;
+          const x = this.settings.collectorRotationX + Math.PI * 0.5;
+          const y = this.settings.collectorRotationY;
+          const z = this.settings.collectorRotationZ + extraSpin;
+          this.collectorMesh.rotation.set(x, y, z);
+          this.collectorWire.rotation.set(x, y, z);
+        }
+
+        updateCollectorPosition(immediate = false) {
+          if (!this.collectorGroup) return;
+          const instrument = this.instrumentOrder[this.collectorLaneIndex] || this.instrumentOrder[0];
+          const angle = this.laneAngles[instrument] ?? 0;
+          const radialOffset = this.getLaneRadialOffsetForInstrument(instrument, this.settings.collectorRadius * 0.08);
+          this.applyTunnelTransform(this.collectorGroup, angle, this.collectorZ, radialOffset, false);
+          if (immediate) this.collectorGroup.updateMatrixWorld();
+        }
+
+        moveCollector(direction) {
+          const count = this.instrumentOrder.length;
+          this.collectorLaneIndex = (this.collectorLaneIndex + direction + count) % count;
+          this.updateCollectorPosition(true);
+          this.updateHUD();
+        }
+
+        handleKeydown(event) {
+          if (event.repeat) return;
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            this.moveCollector(-1);
+          }
+          if (event.key === "ArrowRight") {
+            event.preventDefault();
+            this.moveCollector(1);
+          }
+          if (event.code === "Space") {
+            event.preventDefault();
+            this.shootCollector();
+          }
+        }
+
+        addScore(instrument, amount = null) {
+          const value = amount ?? this.instrumentValues[instrument] ?? 0;
+          this.collectorScore += value;
+          this.collectorBreakdown[instrument] = (this.collectorBreakdown[instrument] || 0) + value;
+          this.updateHUD();
+        }
+
+        createProjectileGeometry(name, size) {
+          const simple = ["BoxGeometry", "SphereGeometry", "TetrahedronGeometry", "OctahedronGeometry", "IcosahedronGeometry", "ConeGeometry", "CylinderGeometry", "TorusGeometry"];
+          const shapeName = name === "random" ? simple[(Math.random() * simple.length) | 0] : name;
+          return { shapeName, geometry: this.createHitGeometry(shapeName, size, size, size) };
+        }
+
+        shootCollector() {
+          if (!this.settings.collectorEnabled || !this.settings.collectorShootingMode || !this.collectorGroup) return;
+          const now = (this.ctx && this.ctx.state !== "closed") ? this.ctx.currentTime : this.clockFallback;
+          if (now - this.lastShotTime < this.settings.collectorShootCooldown) return;
+          this.lastShotTime = now;
+
+          const instrument = this.instrumentOrder[this.collectorLaneIndex] || this.instrumentOrder[0];
+          const angle = this.laneAngles[instrument] ?? 0;
+          const size = this.settings.collectorBulletSize;
+          const built = this.createProjectileGeometry(this.settings.collectorBulletGeometry, size);
+          built.geometry.computeBoundingSphere();
+          const mat = new THREE.MeshStandardMaterial({
+            color: this.settings.collectorBulletColor,
+            emissive: this.settings.collectorGlow,
+            emissiveIntensity: 1.8,
+            roughness: 0.2,
+            metalness: 0.45
+          });
+          const mesh = new THREE.Mesh(built.geometry, mat);
+          this.projectileGroup.add(mesh);
+          const bullet = {
+            instrument,
+            angle,
+            mesh,
+            geometry: built.geometry,
+            material: mat,
+            size,
+            z: this.collectorZ - 0.6,
+            speed: this.settings.collectorShootSpeed,
+            bornAt: now,
+            radialOffset: this.getLaneRadialOffsetForInstrument(instrument, size * 0.06)
+          };
+          this.applyTunnelTransform(mesh, angle, bullet.z, bullet.radialOffset, false);
+          this.projectiles.push(bullet);
+        }
+
+        spawnExplosion(position, amount = 1) {
+          const geo = new THREE.SphereGeometry(0.2, 16, 16);
+          const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.position.copy(position);
+          this.explosionGroup.add(mesh);
+          const now = (this.ctx && this.ctx.state !== "closed") ? this.ctx.currentTime : this.clockFallback;
+          this.explosions.push({
+            mesh,
+            geometry: geo,
+            material: mat,
+            bornAt: now,
+            duration: this.settings.collectorExplosionDuration,
+            maxScale: Math.max(0.4, this.settings.collectorExplosionSize * (0.65 + amount / 40))
+          });
+        }
+
+        removeCueAtIndex(index) {
+          const cue = this.cues[index];
+          if (!cue) return;
+          cue.geometry.dispose();
+          cue.edgeGeometry.dispose();
+          cue.solidMaterial.dispose();
+          cue.edgeMaterial.dispose();
+          this.scene.remove(cue.group);
+          this.cues.splice(index, 1);
+        }
+
+        triggerCueHit(index, amount = null) {
+          const cue = this.cues[index];
+          if (!cue || cue.collected) return;
+          cue.collected = true;
+          this.addScore(cue.instrument, amount);
+          this.spawnExplosion(cue.group.position, this.instrumentValues[cue.instrument] || 1);
+          this.removeCueAtIndex(index);
+        }
+
+        updateCollectorHits(now) {
+          if (!this.settings.collectorEnabled || !this.collectorGroup) return;
+          const currentInstrument = this.instrumentOrder[this.collectorLaneIndex];
+          const hitWindow = this.settings.collectorHitWindow;
+          for (let i = this.cues.length - 1; i >= 0; i--) {
+            const cue = this.cues[i];
+            if (cue.collected) continue;
+            if (cue.instrument !== currentInstrument) continue;
+            if (!this.isInstrumentAudible(cue.instrument)) continue;
+            const distance = cue.group.position.distanceTo(this.collectorGroup.position);
+            const threshold = hitWindow + cue.height * 0.08 + this.settings.collectorRadius * 0.45;
+            if (distance < threshold) this.triggerCueHit(i);
+          }
+        }
+
+        updateProjectiles(now, delta) {
+          for (let i = this.projectiles.length - 1; i >= 0; i--) {
+            const bullet = this.projectiles[i];
+            bullet.z -= bullet.speed * delta;
+            this.applyTunnelTransform(bullet.mesh, bullet.angle, bullet.z, bullet.radialOffset, false);
+            bullet.mesh.rotation.x += 0.08;
+            bullet.mesh.rotation.y += 0.12;
+            let hitIndex = -1;
+            for (let j = this.cues.length - 1; j >= 0; j--) {
+              const cue = this.cues[j];
+              if (cue.collected) continue;
+              if (cue.instrument !== bullet.instrument) continue;
+              if (!this.isInstrumentAudible(cue.instrument)) continue;
+              const distance = cue.group.position.distanceTo(bullet.mesh.position);
+              const threshold = this.settings.collectorBulletSize * 1.6 + cue.height * 0.08;
+              if (distance < threshold) {
+                hitIndex = j;
+                break;
+              }
+            }
+            if (hitIndex >= 0) {
+              this.triggerCueHit(hitIndex);
+              bullet.geometry.dispose();
+              bullet.material.dispose();
+              this.projectileGroup.remove(bullet.mesh);
+              this.projectiles.splice(i, 1);
+              continue;
+            }
+            if (bullet.z < this.getTunnelBackZ() - 40) {
+              bullet.geometry.dispose();
+              bullet.material.dispose();
+              this.projectileGroup.remove(bullet.mesh);
+              this.projectiles.splice(i, 1);
+            }
+          }
+        }
+
+        updateExplosions(now) {
+          for (let i = this.explosions.length - 1; i >= 0; i--) {
+            const exp = this.explosions[i];
+            const t = (now - exp.bornAt) / Math.max(0.01, exp.duration);
+            if (t >= 1) {
+              exp.geometry.dispose();
+              exp.material.dispose();
+              this.explosionGroup.remove(exp.mesh);
+              this.explosions.splice(i, 1);
+              continue;
+            }
+            const scale = 0.2 + exp.maxScale * t;
+            exp.mesh.scale.setScalar(scale);
+            exp.material.opacity = 1 - t;
+          }
+        }
+
+        setupXR() {
+          this.xrButton = VRButton.createButton(this.renderer, { requiredFeatures: ["local-floor"] });
+          this.xrButton.style.right = "16px";
+          this.xrButton.style.left = "auto";
+          this.xrButton.style.bottom = "16px";
+          document.body.appendChild(this.xrButton);
+          this.xrSupported = true;
+          xrStatusEl.textContent = "XR: ready — use Enter VR button in supported browsers";
+          this.renderer.xr.addEventListener("sessionstart", () => {
+            xrStatusEl.textContent = "XR: active";
+          });
+          this.renderer.xr.addEventListener("sessionend", () => {
+            xrStatusEl.textContent = "XR: inactive";
+          });
+        }
+
+        async enterVR() {
+          xrStatusEl.textContent = "XR: use the Enter VR button";
         }
 
         disposeObject3D(obj) {
@@ -680,6 +1144,7 @@
 
         rebuildTunnelEnvironment() {
           this.createEnvironment();
+          this.updateCollectorPosition(true);
         }
 
         createStarShape(outer = 1, inner = 0.5, points = 5) {
@@ -775,6 +1240,12 @@
 initGUI() {
   const gui = new GUI({ container: document.getElementById("gui"), title: "Techno Controls" });
   const refreshFX = () => this.syncMasterEffects();
+  const folderList = [];
+  const addClosed = (parent, title) => {
+    const f = parent.addFolder(title);
+    folderList.push(f);
+    return f;
+  };
 
   gui.add(this.settings, "play").name("Play");
   gui.add(this.settings, "pause").name("Pause");
@@ -784,8 +1255,9 @@ initGUI() {
   gui.add(this.settings, "masterVolume", 0, 1, 0.01).name("Master Volume").onChange(() => this.syncMasterVolume());
   gui.add(this.settings, "lookAhead", 1.2, 3.2, 0.05).name("Visual Horizon").onChange((v) => this.horizon = v);
   gui.add(this.settings, "visualSpeed", 10, 120, 1).name("Track Speed");
+  gui.add(this.settings, "xrEnterVR").name("Enter VR");
 
-  const tunnel = gui.addFolder("Tunnel / Visuals");
+  const tunnel = addClosed(gui, "Tunnel / Visuals");
   tunnel.add(this.settings, "tunnelRadius", 6, 24, 0.1).name("Radius").onChange(() => this.rebuildTunnelEnvironment());
   tunnel.add(this.settings, "tunnelHeight", 20, 2000, 1).name("Height").onChange(() => this.rebuildTunnelEnvironment());
   tunnel.add(this.settings, "tunnelRadialSegments", 5, 48, 1).name("Radial Segments").onChange(() => this.rebuildTunnelEnvironment());
@@ -800,7 +1272,7 @@ initGUI() {
   tunnel.add(this.settings, "cubeWidth", 0.3, 3, 0.05).name("Hit Width");
   tunnel.add(this.settings, "cubeDepth", 0.2, 4, 0.05).name("Hit Depth");
 
-  const camera = gui.addFolder("Camera");
+  const camera = addClosed(gui, "Camera");
   camera.add(this.settings, "cameraUseOrbit").name("Orbit Controls").onChange(() => this.updateCameraFromSettings());
   camera.add(this.settings, "cameraDistanceFromFront", -80, 120, 0.1).name("Distance From End").onChange((v) => this.setCameraDistanceFromFront(v));
   camera.add(this.settings, "cameraPosX", -80, 80, 0.1).name("Camera X").onChange(() => this.updateCameraFromSettings());
@@ -812,7 +1284,7 @@ initGUI() {
   camera.add(this.settings, "cameraStoreCurrent").name("Store Current View");
   camera.add(this.settings, "cameraReset").name("Reset View");
 
-  const environment = gui.addFolder("Environment");
+  const environment = addClosed(gui, "Environment");
   environment.addColor(this.settings, "envBackgroundColor").name("Background").onChange(() => this.updateEnvironmentFromSettings());
   environment.addColor(this.settings, "envFogColor").name("Fog Color").onChange(() => this.updateEnvironmentFromSettings());
   environment.add(this.settings, "envFogDensity", 0, 0.08, 0.0005).name("Fog Density").onChange(() => this.updateEnvironmentFromSettings());
@@ -833,9 +1305,38 @@ initGUI() {
   environment.addColor(this.settings, "envMarkerEmissive").name("Marker Glow").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
   environment.add(this.settings, "envMarkerOpacity", 0, 1, 0.01).name("Marker Opacity").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
   environment.addColor(this.settings, "envRingColor").name("Ring Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
-  environment.addColor(this.settings, "envStarColor").name("Stars Color").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envStarColor").name("Stars Color A").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.addColor(this.settings, "envStarColor2").name("Stars Color B").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarSpeed", 1, 140, 1).name("Stars Speed").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarCount", 64, 2000, 1).name("Stars Count").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarSpread", 20, 340, 1).name("Stars Spread").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarSize", 0.05, 1.6, 0.01).name("Stars Size").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarOpacity", 0.05, 1, 0.01).name("Stars Opacity").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarTrail", 0, 18, 0.1).name("Stars Trail").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
+  environment.add(this.settings, "envStarRainbow").name("Stars Rainbow").onChange(() => this.updateEnvironmentFromSettings({ rebuildTunnel: true }));
 
-  const fx = gui.addFolder("Master FX");
+  const collector = addClosed(gui, "Collector / Game");
+  collector.add(this.settings, "collectorEnabled").name("Enabled").onChange(() => this.createCollector());
+  collector.add(this.settings, "collectorShootingMode").name("Shooting Mode");
+  collector.add(this.settings, "collectorShoot").name("Shoot");
+  collector.add(this.settings, "collectorRadius", 0.3, 3, 0.05).name("Radius").onChange(() => this.createCollector());
+  collector.add(this.settings, "collectorTube", 0.03, 0.4, 0.01).name("Tube").onChange(() => this.createCollector());
+  collector.addColor(this.settings, "collectorColor").name("Color").onChange(() => this.createCollector());
+  collector.addColor(this.settings, "collectorGlow").name("Glow").onChange(() => this.createCollector());
+  collector.add(this.settings, "collectorRotationX", -Math.PI, Math.PI, 0.01).name("Rotation X").onChange(() => this.applyCollectorVisualRotation());
+  collector.add(this.settings, "collectorRotationY", -Math.PI, Math.PI, 0.01).name("Rotation Y").onChange(() => this.applyCollectorVisualRotation());
+  collector.add(this.settings, "collectorRotationZ", -Math.PI, Math.PI, 0.01).name("Rotation Z").onChange(() => this.applyCollectorVisualRotation());
+  collector.add(this.settings, "collectorSpinSpeed", -8, 8, 0.01).name("Spin Speed");
+  collector.add(this.settings, "collectorHitWindow", 0.2, 5, 0.05).name("Hit Window");
+  collector.add(this.settings, "collectorShootSpeed", 10, 220, 1).name("Bullet Speed");
+  collector.add(this.settings, "collectorShootCooldown", 0.03, 0.8, 0.01).name("Shoot Cooldown");
+  collector.add(this.settings, "collectorBulletSize", 0.08, 3, 0.01).name("Bullet Size");
+  collector.addColor(this.settings, "collectorBulletColor").name("Bullet Color");
+  collector.add(this.settings, "collectorBulletGeometry", ["random", "BoxGeometry", "SphereGeometry", "TetrahedronGeometry", "OctahedronGeometry", "IcosahedronGeometry", "ConeGeometry", "CylinderGeometry", "TorusGeometry"]).name("Bullet Shape");
+  collector.add(this.settings, "collectorExplosionSize", 0.5, 8, 0.05).name("Explosion Size");
+  collector.add(this.settings, "collectorExplosionDuration", 0.05, 1, 0.01).name("Explosion Dur");
+
+  const fx = addClosed(gui, "Master FX");
   fx.add(this.settings, "fxDrive", 0, 1, 0.01).name("Drive").onChange(refreshFX);
   fx.add(this.settings, "fxHighpassFreq", 20, 800, 1).name("HPF Freq").onChange(refreshFX);
   fx.add(this.settings, "fxLowpassFreq", 1200, 20000, 10).name("LPF Freq").onChange(refreshFX);
@@ -856,53 +1357,45 @@ initGUI() {
   fx.add(this.settings, "fxCompAttack", 0, 1, 0.001).name("Comp Attack").onChange(refreshFX);
   fx.add(this.settings, "fxCompRelease", 0.01, 1, 0.001).name("Comp Release").onChange(refreshFX);
 
-  const storage = gui.addFolder("Storage");
+  const storage = addClosed(gui, "Storage");
   storage.add(this.settings, "saveNow").name("Save Now");
   storage.add(this.settings, "exportJSON").name("Export JSON");
   storage.add(this.settings, "importJSON").name("Import JSON");
   storage.add(this.settings, "clearSaved").name("Clear Saved");
 
-  const kick = gui.addFolder("Kick");
-  kick.add(this.settings, "kickMute").name("Mute");
-  kick.add(this.settings, "kickVolume", 0, 1.5, 0.01).name("Volume");
-  kick.add(this.settings, "kickLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("kick", v));
-  kick.add(this.settings, "kickPlayPreview").name("Play");
-  kick.add(this.settings, "kickStopPreview").name("Stop");
+  const instruments = addClosed(gui, "Instruments");
+  const addInstrumentFolder = (key, label, typeSet = 1) => {
+    const f = addClosed(instruments, label);
+    f.add(this.settings, `${key}Mute`).name("Mute");
+    f.add(this.settings, `${key}Solo`).name("Solo");
+    f.add(this.settings, `${key}Volume`, 0, 1.5, 0.01).name("Volume");
+    f.add(this.settings, `${key}Loop`).name("Loop").onChange((v) => this.handlePreviewLoopToggle(key, v));
+    f.add(this.settings, `${key}PlayPreview`).name("Play");
+    f.add(this.settings, `${key}StopPreview`).name("Stop");
+    return f;
+  };
+
+  const kick = addInstrumentFolder("kick", "Kick");
   kick.add(this.settings, "kickBaseFreq", 40, 260, 1).name("Base Freq");
   kick.add(this.settings, "kickDecay", 0.05, 0.3, 0.005).name("Decay");
   kick.add(this.settings, "kickType", OSC_TYPES).name("Osc Type");
   kick.add(this.settings, "kickGeometry", VISUAL_GEOMETRIES).name("Geometry");
 
-  const snare = gui.addFolder("Snare");
-  snare.add(this.settings, "snareMute").name("Mute");
-  snare.add(this.settings, "snareVolume", 0, 1.5, 0.01).name("Volume");
-  snare.add(this.settings, "snareLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("snare", v));
-  snare.add(this.settings, "snarePlayPreview").name("Play");
-  snare.add(this.settings, "snareStopPreview").name("Stop");
+  const snare = addInstrumentFolder("snare", "Snare");
   snare.add(this.settings, "snareToneFreq", 80, 420, 1).name("Tone Freq");
   snare.add(this.settings, "snareNoiseFreq", 600, 5000, 10).name("Noise HPF");
   snare.add(this.settings, "snareDecay", 0.05, 0.22, 0.005).name("Decay");
   snare.add(this.settings, "snareType", OSC_TYPES).name("Osc Type");
   snare.add(this.settings, "snareGeometry", VISUAL_GEOMETRIES).name("Geometry");
 
-  const hat = gui.addFolder("Hi-Hat");
-  hat.add(this.settings, "hatMute").name("Mute");
-  hat.add(this.settings, "hatVolume", 0, 1.5, 0.01).name("Volume");
-  hat.add(this.settings, "hatLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("hat", v));
-  hat.add(this.settings, "hatPlayPreview").name("Play");
-  hat.add(this.settings, "hatStopPreview").name("Stop");
+  const hat = addInstrumentFolder("hat", "Hi-Hat");
   hat.add(this.settings, "hatFreq", 3000, 14000, 10).name("Filter Freq");
   hat.add(this.settings, "hatToneFreq", 1400, 11000, 10).name("Tone Freq");
   hat.add(this.settings, "hatDecay", 0.02, 0.18, 0.005).name("Decay");
   hat.add(this.settings, "hatType", OSC_TYPES).name("Osc Type");
   hat.add(this.settings, "hatGeometry", VISUAL_GEOMETRIES).name("Geometry");
 
-  const bass = gui.addFolder("Bass Arp");
-  bass.add(this.settings, "bassMute").name("Mute");
-  bass.add(this.settings, "bassVolume", 0, 1.5, 0.01).name("Volume");
-  bass.add(this.settings, "bassLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("bass", v));
-  bass.add(this.settings, "bassPlayPreview").name("Play");
-  bass.add(this.settings, "bassStopPreview").name("Stop");
+  const bass = addInstrumentFolder("bass", "Bass 1");
   bass.add(this.settings, "bassBaseFreq", 32, 110, 0.5).name("Base Freq");
   bass.add(this.settings, "bassFilter", 180, 2400, 10).name("Filter Base");
   bass.add(this.settings, "bassDecay", 0.08, 0.45, 0.005).name("Decay");
@@ -910,12 +1403,15 @@ initGUI() {
   bass.add(this.settings, "bassType1", OSC_TYPES).name("Osc 1 Type");
   bass.add(this.settings, "bassType2", OSC_TYPES).name("Osc 2 Type");
 
-  const lead = gui.addFolder("Lead");
-  lead.add(this.settings, "leadMute").name("Mute");
-  lead.add(this.settings, "leadVolume", 0, 1.5, 0.01).name("Volume");
-  lead.add(this.settings, "leadLoop").name("Loop").onChange((v) => this.handlePreviewLoopToggle("lead", v));
-  lead.add(this.settings, "leadPlayPreview").name("Play");
-  lead.add(this.settings, "leadStopPreview").name("Stop");
+  const bass2 = addInstrumentFolder("bass2", "Bass 2");
+  bass2.add(this.settings, "bass2BaseFreq", 40, 220, 0.5).name("Base Freq");
+  bass2.add(this.settings, "bass2Filter", 180, 3600, 10).name("Filter Base");
+  bass2.add(this.settings, "bass2Decay", 0.05, 0.6, 0.005).name("Decay");
+  bass2.add(this.settings, "bass2Geometry", VISUAL_GEOMETRIES).name("Geometry");
+  bass2.add(this.settings, "bass2Type1", OSC_TYPES).name("Osc 1 Type");
+  bass2.add(this.settings, "bass2Type2", OSC_TYPES).name("Osc 2 Type");
+
+  const lead = addInstrumentFolder("lead", "Lead 1");
   lead.add(this.settings, "leadBaseFreq", 80, 880, 1).name("Base Freq");
   lead.add(this.settings, "leadFilter", 300, 8000, 10).name("Filter");
   lead.add(this.settings, "leadDecay", 0.2, 2.5, 0.01).name("Decay");
@@ -925,22 +1421,37 @@ initGUI() {
   lead.add(this.settings, "leadType1", OSC_TYPES).name("Osc 1 Type");
   lead.add(this.settings, "leadType2", OSC_TYPES).name("Osc 2 Type");
 
+  const lead2 = addInstrumentFolder("lead2", "Lead 2");
+  lead2.add(this.settings, "lead2BaseFreq", 80, 1320, 1).name("Base Freq");
+  lead2.add(this.settings, "lead2Filter", 300, 10000, 10).name("Filter");
+  lead2.add(this.settings, "lead2Decay", 0.2, 3, 0.01).name("Decay");
+  lead2.add(this.settings, "lead2Glide", 0, 0.2, 0.001).name("Glide");
+  lead2.add(this.settings, "lead2Octave", 0, 4, 1).name("Octave");
+  lead2.add(this.settings, "lead2Geometry", VISUAL_GEOMETRIES).name("Geometry");
+  lead2.add(this.settings, "lead2Type1", OSC_TYPES).name("Osc 1 Type");
+  lead2.add(this.settings, "lead2Type2", OSC_TYPES).name("Osc 2 Type");
+
   if (typeof gui.onChange === "function") {
     gui.onChange((event) => this.handleGuiChange(event));
   }
 
-  this.gui = gui;
+  for (const f of folderList) f.close();
+    this.gui = gui;
 }
 
 handleGuiChange(event) {
   const property = event?.property;
   if (!property) return;
   if (typeof this.settings[property] === "function") return;
-  if (/Mute$/.test(property)) this.updateCueMuteStates();
+  if (/(Mute|Solo)$/.test(property)) this.updateCueMuteStates();
   if (property === "masterVolume") this.syncMasterVolume();
   if (property.startsWith("fx")) this.syncMasterEffects();
   if (property.startsWith("camera")) this.updateCameraFromSettings();
   if (property.startsWith("env")) this.updateEnvironmentFromSettings({ rebuildTunnel: /(Tunnel|Wire|Marker|Ring|Star)/.test(property) });
+  if (property.startsWith("collector")) {
+    if (/collector(Color|Glow|Radius|Tube|Enabled)/.test(property)) this.createCollector();
+    else if (/collectorRotation/.test(property)) this.applyCollectorVisualRotation();
+  }
   if (property.startsWith("tunnel") || property.endsWith("Geometry")) this.rebuildTunnelEnvironment();
   this.schedulePersist("autosave");
 }
@@ -983,6 +1494,7 @@ applySettings(payload, { persist = true } = {}) {
   this.handleBpmChange();
   this.refreshGUI();
   this.updateCueMuteStates();
+  this.updateCollectorPosition(true);
   this.updateHUD();
 
   if (persist) this.schedulePersist("apply");
@@ -1319,14 +1831,24 @@ createNoiseBuffer() {
     this.noiseBuffer = buffer;
 }
 
+anySoloActive() {
+  return this.instrumentOrder.some((name) => !!this.settings[`${name}Solo`]);
+}
+
+isInstrumentAudible(name) {
+  if (this.settings[`${name}Mute`]) return false;
+  if (!this.anySoloActive()) return true;
+  return !!this.settings[`${name}Solo`];
+}
+
 getInstrumentLevel(name, level = 1) {
-  if (this.settings[`${name}Mute`]) return 0;
+  if (!this.isInstrumentAudible(name)) return 0;
   return Math.max(0, (this.settings[`${name}Volume`] ?? 1) * level);
 }
 
 handleBpmChange() {
   this.horizon = this.settings.lookAhead;
-  for (const name of ["kick", "snare", "hat", "bass", "lead"]) {
+  for (const name of ["kick", "snare", "hat", "bass", "bass2", "lead", "lead2"]) {
     const state = this.previewState[name];
     if (state?.active && this.settings[`${name}Loop`]) this.startPreviewLoop(name);
   }
@@ -1346,7 +1868,9 @@ getPreviewIntervalMs(name) {
     snare: beat * 2,
     hat: beat / 2,
     bass: beat / 2,
-    lead: beat * 4
+    bass2: beat,
+    lead: beat * 4,
+    lead2: beat * 4
   }[name] || beat;
 }
 
@@ -1356,11 +1880,11 @@ stopPreview(name) {
   if (state.timer) clearInterval(state.timer);
   state.timer = null;
   state.active = false;
-  if (name === "bass" || name === "lead") state.arpIndex = 0;
+  if (["bass", "bass2", "lead", "lead2"].includes(name)) state.arpIndex = 0;
 }
 
 stopAllPreviews() {
-  for (const name of ["kick", "snare", "hat", "bass", "lead"]) this.stopPreview(name);
+  for (const name of ["kick", "snare", "hat", "bass", "bass2", "lead", "lead2"]) this.stopPreview(name);
 }
 
 async previewSound(name) {
@@ -1418,9 +1942,20 @@ triggerPreviewInstrument(name, time) {
     const seq = [0, 7, 12, 7];
     const semi = seq[state.arpIndex || 0];
     state.arpIndex = ((state.arpIndex || 0) + 1) % seq.length;
-    const freq = this.semitoneToFreq(semi);
+    const freq = this.semitoneToFreq(semi, this.settings.bassBaseFreq);
     this.triggerBass(time, freq, 0.92, this.settings.bassDecay, this.settings.bassFilter);
     this.emitVisual("bass", freq, this.settings.bassType1, time);
+    return;
+  }
+
+  if (name === "bass2") {
+    const state = this.previewState.bass2 || (this.previewState.bass2 = {});
+    const seq = [0, 3, 7, 10];
+    const semi = seq[state.arpIndex || 0];
+    state.arpIndex = ((state.arpIndex || 0) + 1) % seq.length;
+    const freq = this.semitoneToFreq(semi, this.settings.bass2BaseFreq);
+    this.triggerBassVoice("bass2", time, freq, 0.9, this.settings.bass2Decay, this.settings.bass2Filter);
+    this.emitVisual("bass2", freq, this.settings.bass2Type1, time);
     return;
   }
 
@@ -1433,6 +1968,18 @@ triggerPreviewInstrument(name, time) {
     const len = Math.max(this.settings.leadDecay, 60 / this.settings.bpm * 1.4);
     this.triggerLead(time, freq, 0.92, len, this.settings.leadFilter);
     this.emitVisual("lead", freq, this.settings.leadType1, time);
+    return;
+  }
+
+  if (name === "lead2") {
+    const state = this.previewState.lead2 || (this.previewState.lead2 = {});
+    const seq = [7, 12, 15, 19];
+    const semi = seq[state.arpIndex || 0];
+    state.arpIndex = ((state.arpIndex || 0) + 1) % seq.length;
+    const freq = this.semitoneToFreq(semi + this.settings.lead2Octave * 12, this.settings.lead2BaseFreq);
+    const len = Math.max(this.settings.lead2Decay, 60 / this.settings.bpm * 1.8);
+    this.triggerLeadVoice("lead2", time, freq, 0.88, len, this.settings.lead2Filter);
+    this.emitVisual("lead2", freq, this.settings.lead2Type1, time);
   }
 }
 
@@ -1450,6 +1997,28 @@ mutate(pattern, chance = 0.08) {
 
 semitoneToFreq(semitones, base = this.settings.bassBaseFreq) {
   return base * Math.pow(2, semitones / 12);
+}
+
+getInstrumentRepresentativeFreq(name) {
+  switch (name) {
+    case "kick": return this.settings.kickBaseFreq;
+    case "snare": return this.settings.snareToneFreq;
+    case "hat": return this.settings.hatToneFreq;
+    case "bass": return this.settings.bassBaseFreq;
+    case "bass2": return this.settings.bass2BaseFreq;
+    case "lead": return this.settings.leadBaseFreq * Math.pow(2, this.settings.leadOctave);
+    case "lead2": return this.settings.lead2BaseFreq * Math.pow(2, this.settings.lead2Octave);
+    default: return 220;
+  }
+}
+
+getLaneRadialOffsetForInstrument(name, extra = 0) {
+  const freq = Math.max(20, this.getInstrumentRepresentativeFreq(name));
+  return THREE.MathUtils.clamp(
+    this.heightFromFreq(freq) * 0.34 + extra,
+    0.28,
+    Math.max(0.5, this.settings.tunnelRadius - 0.8)
+  );
 }
 
 oscillatorColor(type, instrument) {
@@ -1530,7 +2099,7 @@ setCueMutedState(cue, muted) {
 
 updateCueMuteStates() {
   for (const cue of this.cues) {
-    this.setCueMutedState(cue, !!this.settings[`${cue.instrument}Mute`]);
+    this.setCueMutedState(cue, !this.isInstrumentAudible(cue.instrument));
   }
 }
 
@@ -1562,7 +2131,7 @@ emitVisual(instrument, freq, type, time) {
     height,
     shapeName,
     displayMode,
-    muted: !!this.settings[`${instrument}Mute`]
+    muted: !this.isInstrumentAudible(instrument)
   };
   this.setCueMutedState(cue, cue.muted);
   this.cues.push(cue);
@@ -1606,6 +2175,13 @@ makePatterns() {
     "x.x...xxx.x...x.",
     "x...x...xx..x.x."
   ];
+  const bass2Pool = [
+    "....x...x.......",
+    "x.......x.......",
+    "....x.......x...",
+    "x...x.......x...",
+    "........x......."
+  ];
   const leadPool = [
     "........x.......",
     "....x...........",
@@ -1613,6 +2189,13 @@ makePatterns() {
     "........x...x...",
     "....x.......x...",
     "............x..."
+  ];
+  const lead2Pool = [
+    "............x...",
+    "...........x....",
+    "....x...........",
+    "............x..x",
+    "................"
   ];
   const progressions = [
     [0, 0, 3, -2],
@@ -1627,12 +2210,24 @@ makePatterns() {
     [12, 7, 0, 7],
     [0, 12, 7, 15]
   ];
+  const bass2Arps = [
+    [12, 7, 3, 7],
+    [7, 10, 12, 15],
+    [12, 15, 19, 15],
+    [3, 7, 10, 7]
+  ];
   const leadIntervals = [
     [12, 19],
     [12, 15],
     [19, 24],
     [12, 22],
     [15, 19]
+  ];
+  const lead2Intervals = [
+    [24, 19],
+    [22, 27],
+    [19, 31],
+    [24, 27]
   ];
 
   this.bar += 1;
@@ -1643,19 +2238,31 @@ makePatterns() {
   const snare = this.mutate(this.pick(snarePool), 0.05);
   const hat = this.mutate(this.pick(hatPool), 0.08);
   const bass = this.mutate(this.pick(bassPool), 0.07);
+  const bass2 = this.mutate(this.pick(bass2Pool), 0.04);
   let lead = this.pick(leadPool);
+  let lead2 = this.pick(lead2Pool);
   if (Math.random() < 0.35) lead = this.mutate(lead, 0.03);
+  if (Math.random() < 0.25) lead2 = this.mutate(lead2, 0.025);
   const arp = this.pick(arps);
+  const arp2 = this.pick(bass2Arps);
   const leadArp = this.pick(leadIntervals);
+  const lead2Arp = this.pick(lead2Intervals);
 
   kick = "x..." + kick.slice(4, 12) + "x...";
 
   const denseKick = (kick.match(/x/g) || []).length;
   const bassAccent = denseKick > 4 ? 0.66 : 0.88;
   const bassFilter = denseKick > 4 ? this.settings.bassFilter * 0.82 : this.settings.bassFilter * 1.08;
+  const bass2Filter = denseKick > 4 ? this.settings.bass2Filter * 0.9 : this.settings.bass2Filter * 1.14;
   const leadFilter = denseKick > 4 ? this.settings.leadFilter * 0.9 : this.settings.leadFilter * 1.1;
+  const lead2Filter = denseKick > 4 ? this.settings.lead2Filter * 0.94 : this.settings.lead2Filter * 1.12;
 
-  return { kick, snare, hat, bass, lead, arp, leadArp, leadIndex: 0, rootSemi, bassAccent, bassFilter, leadFilter };
+  return {
+    kick, snare, hat, bass, bass2, lead, lead2,
+    arp, arp2, leadArp, lead2Arp,
+    leadIndex: 0, lead2Index: 0,
+    rootSemi, bassAccent, bassFilter, bass2Filter, leadFilter, lead2Filter
+  };
 }
 
 scheduleLoop() {
@@ -1706,8 +2313,17 @@ scheduleStep(stepInBar, time) {
     const freq = this.semitoneToFreq(semi);
     const accent = (stepInBar % 4 === 0 ? 1 : 0.72) * p.bassAccent;
     const len = stepInBar % 2 === 0 ? this.settings.bassDecay : this.settings.bassDecay * 0.72;
-    this.triggerBass(time, freq, accent, len, p.bassFilter);
+    this.triggerBassVoice("bass", time, freq, accent, len, p.bassFilter);
     this.emitVisual("bass", freq, this.settings.bassType1, time);
+  }
+
+  if (p.bass2[stepInBar] === "x") {
+    const semi = p.rootSemi + p.arp2[stepInBar % p.arp2.length];
+    const freq = this.semitoneToFreq(semi, this.settings.bass2BaseFreq);
+    const accent = stepInBar % 4 === 0 ? 0.92 : 0.66;
+    const len = stepInBar % 4 === 0 ? this.settings.bass2Decay * 1.1 : this.settings.bass2Decay * 0.8;
+    this.triggerBassVoice("bass2", time, freq, accent, len, p.bass2Filter);
+    this.emitVisual("bass2", freq, this.settings.bass2Type1, time);
   }
 
   if (p.lead[stepInBar] === "x") {
@@ -1716,8 +2332,18 @@ scheduleStep(stepInBar, time) {
     const freq = this.semitoneToFreq(semi, this.settings.leadBaseFreq);
     const len = Math.max(this.settings.leadDecay, 60 / this.settings.bpm * (idx % 2 === 0 ? 1.8 : 1.25));
     const accent = idx % 2 === 0 ? 0.95 : 0.75;
-    this.triggerLead(time, freq, accent, len, p.leadFilter);
+    this.triggerLeadVoice("lead", time, freq, accent, len, p.leadFilter);
     this.emitVisual("lead", freq, this.settings.leadType1, time);
+  }
+
+  if (p.lead2[stepInBar] === "x") {
+    const idx = p.lead2Index++ % p.lead2Arp.length;
+    const semi = p.rootSemi + p.lead2Arp[idx] + this.settings.lead2Octave * 12;
+    const freq = this.semitoneToFreq(semi, this.settings.lead2BaseFreq);
+    const len = Math.max(this.settings.lead2Decay, 60 / this.settings.bpm * (idx % 2 === 0 ? 2.1 : 1.6));
+    const accent = idx % 2 === 0 ? 0.88 : 0.68;
+    this.triggerLeadVoice("lead2", time, freq, accent, len, p.lead2Filter);
+    this.emitVisual("lead2", freq, this.settings.lead2Type1, time);
   }
 }
 
@@ -1801,14 +2427,18 @@ triggerHat(time, open = false, level = 1) {
 }
 
 triggerBass(time, freq, accent, len, filterBase) {
-  const level = this.getInstrumentLevel("bass", 1);
+  this.triggerBassVoice("bass", time, freq, accent, len, filterBase);
+}
+
+triggerBassVoice(name, time, freq, accent, len, filterBase) {
+  const level = this.getInstrumentLevel(name, 1);
   if (!level) return;
   const o1 = this.ctx.createOscillator();
   const o2 = this.ctx.createOscillator();
   const sub = this.ctx.createOscillator();
 
-  o1.type = this.settings.bassType1;
-  o2.type = this.settings.bassType2;
+  o1.type = this.settings[`${name}Type1`];
+  o2.type = this.settings[`${name}Type2`];
   sub.type = "sine";
 
   o1.frequency.setValueAtTime(freq, time);
@@ -1816,17 +2446,17 @@ triggerBass(time, freq, accent, len, filterBase) {
   sub.frequency.setValueAtTime(freq * 0.5, time);
 
   const mix = this.ctx.createGain();
-  mix.gain.value = 0.22;
+  mix.gain.value = name === "bass2" ? 0.16 : 0.22;
 
   const filter = this.ctx.createBiquadFilter();
   filter.type = "lowpass";
-  filter.Q.value = 10.5;
+  filter.Q.value = name === "bass2" ? 8.2 : 10.5;
   filter.frequency.setValueAtTime(filterBase * 0.7, time);
-  filter.frequency.exponentialRampToValueAtTime(filterBase + 1600 * accent, time + 0.03);
+  filter.frequency.exponentialRampToValueAtTime(filterBase + (name === "bass2" ? 1100 : 1600) * accent, time + 0.03);
   filter.frequency.exponentialRampToValueAtTime(180 + filterBase * 0.28, time + len);
 
   const vca = this.ctx.createGain();
-  this.expEnv(vca.gain, time, [[0.0001, 0], [0.78 * accent * level, 0.012], [0.001, len]]);
+  this.expEnv(vca.gain, time, [[0.0001, 0], [(name === "bass2" ? 0.58 : 0.78) * accent * level, 0.012], [0.001, len]]);
 
   o1.connect(mix);
   o2.connect(mix);
@@ -1840,7 +2470,11 @@ triggerBass(time, freq, accent, len, filterBase) {
 }
 
 triggerLead(time, freq, accent, len, filterBase) {
-  const level = this.getInstrumentLevel("lead", 1);
+  this.triggerLeadVoice("lead", time, freq, accent, len, filterBase);
+}
+
+triggerLeadVoice(name, time, freq, accent, len, filterBase) {
+  const level = this.getInstrumentLevel(name, 1);
   if (!level) return;
 
   const o1 = this.ctx.createOscillator();
@@ -1851,31 +2485,32 @@ triggerLead(time, freq, accent, len, filterBase) {
   const filter = this.ctx.createBiquadFilter();
   const vca = this.ctx.createGain();
 
-  o1.type = this.settings.leadType1;
-  o2.type = this.settings.leadType2;
+  o1.type = this.settings[`${name}Type1`];
+  o2.type = this.settings[`${name}Type2`];
   lfo.type = "sine";
+  const glide = this.settings[`${name}Glide`] ?? this.settings.leadGlide;
 
-  o1.frequency.setValueAtTime(Math.max(1, freq * (1 - this.settings.leadGlide * 0.4)), time);
+  o1.frequency.setValueAtTime(Math.max(1, freq * (1 - glide * 0.4)), time);
   o2.frequency.setValueAtTime(Math.max(1, freq * 1.004), time);
-  o1.frequency.exponentialRampToValueAtTime(freq, time + Math.max(0.001, this.settings.leadGlide));
-  o2.frequency.exponentialRampToValueAtTime(freq * 1.002, time + Math.max(0.001, this.settings.leadGlide));
+  o1.frequency.exponentialRampToValueAtTime(freq, time + Math.max(0.001, glide));
+  o2.frequency.exponentialRampToValueAtTime(freq * 1.002, time + Math.max(0.001, glide));
 
   filter.type = "lowpass";
-  filter.Q.value = 8;
+  filter.Q.value = name === "lead2" ? 10 : 8;
   filter.frequency.setValueAtTime(filterBase * 0.72, time);
-  filter.frequency.exponentialRampToValueAtTime(filterBase + 1200 * accent, time + 0.08);
+  filter.frequency.exponentialRampToValueAtTime(filterBase + (name === "lead2" ? 900 : 1200) * accent, time + 0.08);
   filter.frequency.exponentialRampToValueAtTime(Math.max(220, filterBase * 0.7), time + len);
 
-  lfo.frequency.setValueAtTime(5.5, time);
-  lfoGain.gain.setValueAtTime(freq * 0.005, time);
+  lfo.frequency.setValueAtTime(name === "lead2" ? 6.4 : 5.5, time);
+  lfoGain.gain.setValueAtTime(freq * (name === "lead2" ? 0.007 : 0.005), time);
   lfo.connect(lfoGain);
   lfoGain.connect(o1.frequency);
   lfoGain.connect(o2.frequency);
 
-  mix.gain.value = 0.16;
+  mix.gain.value = name === "lead2" ? 0.11 : 0.16;
   vca.gain.setValueAtTime(0.0001, time);
-  vca.gain.exponentialRampToValueAtTime(Math.max(0.001, 0.52 * accent * level), time + 0.02);
-  vca.gain.exponentialRampToValueAtTime(Math.max(0.001, 0.36 * accent * level), time + Math.max(0.06, len * 0.45));
+  vca.gain.exponentialRampToValueAtTime(Math.max(0.001, (name === "lead2" ? 0.42 : 0.52) * accent * level), time + 0.02);
+  vca.gain.exponentialRampToValueAtTime(Math.max(0.001, (name === "lead2" ? 0.28 : 0.36) * accent * level), time + Math.max(0.06, len * 0.45));
   vca.gain.exponentialRampToValueAtTime(0.001, time + len);
 
   o1.connect(mix);
@@ -1892,19 +2527,27 @@ triggerLead(time, freq, accent, len, filterBase) {
 
 updateHUD() {
   const state = this.running ? "playing" : (this.startedAtLeastOnce ? "paused / stopped" : "stopped");
-  statusEl.textContent = `Status: ${state} | BPM ${this.settings.bpm} | Bar ${this.bar}`;
+  const lane = this.instrumentOrder[this.collectorLaneIndex] || "kick";
+  statusEl.textContent = `Status: ${state} | BPM ${this.settings.bpm} | Bar ${this.bar} | Collector lane ${lane}`;
   if (!this.currentBarPatterns) {
     patternsEl.textContent = "Patterns: waiting to start…";
-    return;
+  } else {
+    const p = this.currentBarPatterns;
+    patternsEl.textContent = [
+      `kick   ${p.kick}`,
+      `snare  ${p.snare}`,
+      `hat    ${p.hat}`,
+      `bass1  ${p.bass}`,
+      `bass2  ${p.bass2}`,
+      `lead1  ${p.lead}`,
+      `lead2  ${p.lead2}`
+    ].join("\n");
   }
-  const p = this.currentBarPatterns;
-  patternsEl.textContent = [
-    `kick  ${p.kick}`,
-    `snare ${p.snare}`,
-    `hat   ${p.hat}`,
-    `bass  ${p.bass}`,
-    `lead  ${p.lead}`
-  ].join("\n");
+  scoreEl.textContent = `Collector: ← → move lane | space shoot | lane ${lane} | bullets ${this.projectiles.length}`;
+  scorePanelEl.innerHTML = `
+    <div class="total">SCORE ${this.collectorScore}</div>
+    <div class="meta">kick ${this.collectorBreakdown.kick} · snare ${this.collectorBreakdown.snare} · hat ${this.collectorBreakdown.hat} · bass1 ${this.collectorBreakdown.bass} · bass2 ${this.collectorBreakdown.bass2} · lead1 ${this.collectorBreakdown.lead} · lead2 ${this.collectorBreakdown.lead2}</div>
+  `;
 }
 
 async play() {
@@ -1947,7 +2590,21 @@ async stop() {
   this.nextTime = 0;
   this.currentBarPatterns = null;
   this.progression = null;
+  this.collectorScore = 0;
+  this.collectorBreakdown = { kick: 0, snare: 0, hat: 0, bass: 0, bass2: 0, lead: 0, lead2: 0 };
   this.clearCues();
+  for (const bullet of this.projectiles) {
+    bullet.geometry.dispose();
+    bullet.material.dispose();
+    this.projectileGroup?.remove(bullet.mesh);
+  }
+  this.projectiles.length = 0;
+  for (const exp of this.explosions) {
+    exp.geometry.dispose();
+    exp.material.dispose();
+    this.explosionGroup?.remove(exp.mesh);
+  }
+  this.explosions.length = 0;
   if (this.ctx && this.ctx.state !== "closed") await this.ctx.close();
   this.ctx = null;
   this.master = null;
@@ -1964,6 +2621,8 @@ async restart() {
 }
 
 updateVisuals(now) {
+  const delta = Math.min(0.05, Math.max(0.001, now - (this._lastVisualNow ?? now)));
+  this._lastVisualNow = now;
   const roadPulse = this.running ? 0.5 + 0.5 * Math.sin(now * (this.settings.bpm / 30)) : 0.18;
   if (this.tunnelShell?.material) {
     this.tunnelShell.material.emissiveIntensity = 0.18 + roadPulse * 0.18;
@@ -1978,6 +2637,10 @@ updateVisuals(now) {
 
   const spawnZ = this.getTunnelBackZ() - 16;
   const frontZ = this.getTunnelFrontZ() + 1.2;
+
+  this.updateStarField(delta);
+  this.updateCollectorPosition();
+  this.applyCollectorVisualRotation(now * this.settings.collectorSpinSpeed);
 
   for (let i = this.cues.length - 1; i >= 0; i--) {
     const cue = this.cues[i];
@@ -2008,16 +2671,23 @@ updateVisuals(now) {
 
     const scale = dt < 0 ? 1 + Math.abs(dt) * 2.2 : 1;
     cue.group.scale.set(scale, 1 + Math.sin(now * 8 + i) * 0.02, scale);
-    cue.solidMaterial.emissiveIntensity = dt < 0.05 ? 1.9 : 1.2;
+    if (cue.solidMaterial) cue.solidMaterial.emissiveIntensity = dt < 0.05 ? 1.9 : 1.2;
   }
+
+  this.updateCollectorHits(now);
+  this.updateProjectiles(now, delta);
+  this.updateExplosions(now);
 }
 
 animate() {
-  requestAnimationFrame(() => this.animate());
-  const now = (this.ctx && this.ctx.state !== "closed") ? this.ctx.currentTime : (this.clockFallback += 0.016);
-  this.updateVisuals(now);
-  if (this.orbitControls) this.orbitControls.update();
-  this.renderer.render(this.scene, this.camera);
+  if (this._animationStarted) return;
+  this._animationStarted = true;
+  this.renderer.setAnimationLoop(() => {
+    const now = (this.ctx && this.ctx.state !== "closed") ? this.ctx.currentTime : (this.clockFallback += 0.016);
+    this.updateVisuals(now);
+    if (this.orbitControls && this.settings.cameraUseOrbit && !this.renderer.xr.isPresenting) this.orbitControls.update();
+    this.renderer.render(this.scene, this.camera);
+  });
 }
 
 onResize() {
