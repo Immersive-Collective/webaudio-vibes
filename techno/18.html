@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Techno Track Visualizer</title>
   <style>
     :root {
@@ -23,6 +23,13 @@
       background: radial-gradient(circle at top, #10172b 0%, #06080f 35%, #030406 100%);
       color: var(--text);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+      touch-action: manipulation;
+    }
+
+    button, input, select, textarea {
+      font-size: 16px;
     }
 
     #app {
@@ -218,6 +225,134 @@
       right: 16px;
       z-index: 30;
       pointer-events: auto;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      overflow-x: visible;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    #gui .lil-gui.root {
+      max-height: inherit;
+      overflow-y: auto;
+      overflow-x: visible;
+    }
+
+    #hudToggle, #guiToggle {
+      position: fixed;
+      z-index: 40;
+      pointer-events: auto;
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      background: rgba(8, 12, 20, 0.86);
+      color: var(--text);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      padding: 8px 10px;
+      min-width: 48px;
+      min-height: 42px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    #hudToggle {
+      top: 16px;
+      left: 16px;
+      display: none;
+    }
+
+    #guiToggle {
+      right: 16px;
+      bottom: 16px;
+      display: none;
+    }
+
+    #mobileTransport {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      z-index: 42;
+      display: none;
+      gap: 8px;
+      pointer-events: auto;
+    }
+
+    #mobileTransport button {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      background: rgba(8, 12, 20, 0.88);
+      color: var(--text);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    body.mobile-ui #hudToggle,
+    body.mobile-ui #guiToggle,
+    body.mobile-ui #mobileTransport {
+      display: flex;
+    }
+
+    body.mobile-ui #hud {
+      display: block;
+    }
+
+    body.mobile-ui #hud.is-minimized {
+      display: none;
+    }
+
+    body.mobile-ui #gui.is-minimized {
+      opacity: 1;
+      pointer-events: auto;
+      transform: none;
+    }
+
+    body.mobile-ui #scorePanel {
+      top: 12px;
+      min-width: 0;
+      width: calc(100vw - 24px);
+      padding: 8px 10px;
+    }
+
+    body.mobile-ui #scorePanel .total {
+      font-size: 17px;
+    }
+
+    body.mobile-ui .ledWrap {
+      gap: 4px;
+      min-height: 52px;
+    }
+
+    body.mobile-ui .ledDigit {
+      width: 28px;
+      height: 48px;
+    }
+
+    body.mobile-ui #hud {
+      top: 64px;
+      left: 12px;
+      min-width: 0;
+      max-width: calc(100vw - 24px);
+      max-height: calc(100vh - 160px);
+      overflow: auto;
+    }
+
+    body.mobile-ui #gui {
+      top: auto;
+      right: 12px;
+      bottom: 62px;
+      max-height: calc(100vh - 132px);
+      overflow-y: auto;
+      overflow-x: visible;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    body.mobile-ui canvas {
+      touch-action: none;
     }
 
     @media (max-width: 720px) {
@@ -237,6 +372,8 @@
         right: 12px;
         bottom: 12px;
         max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        overflow-x: visible;
       }
     }
   </style>
@@ -245,6 +382,14 @@
   <div id="app"></div>
   <div id="gui"></div>
   <div id="scorePanel"></div>
+  <button id="hudToggle" type="button" aria-expanded="false">HUD</button>
+  <button id="guiToggle" type="button" aria-expanded="false">CTRL</button>
+  <div id="mobileTransport" aria-label="Mobile transport">
+    <button id="mobilePlay" type="button" aria-label="Play">▶</button>
+    <button id="mobilePause" type="button" aria-label="Pause">⏸</button>
+    <button id="mobileStop" type="button" aria-label="Stop">■</button>
+    <button id="mobileRestart" type="button" aria-label="Restart">↺</button>
+  </div>
 
   <div id="hud">
     <h1>Techno Track / Audio + Visual</h1>
@@ -318,6 +463,10 @@
       const scorePanelEl = document.getElementById("scorePanel");
       const xrStatusEl = document.getElementById("xrstatus");
       const storageEl = document.getElementById("storage");
+      const hudEl = document.getElementById("hud");
+      const hudToggleEl = document.getElementById("hudToggle");
+      const guiToggleEl = document.getElementById("guiToggle");
+      const mobileTransportEl = document.getElementById("mobileTransport");
 
       class TechnoApp {
         constructor() {
@@ -405,6 +554,13 @@
           this.xrScoreCtx = null;
           this.xrScoreTexture = null;
           this.xrScorePlane = null;
+          this.isMobile = this.detectMobileDevice();
+          this.isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+          this.hasWebXR = !!(navigator.xr);
+          this.isMobileNonXR = this.isMobile && !this.hasWebXR;
+          this.mobileTouch = null;
+          this.hudMinimized = false;
+          this.guiMinimized = false;
 
           this.settings = {
             bpm: 138,
@@ -527,7 +683,7 @@
             bass2Geometry: "TorusKnotGeometry",
             leadGeometry: "IcosahedronGeometry",
             lead2Geometry: "SphereGeometry",
-            cameraUseOrbit: false,
+            cameraUseOrbit: true,
             cameraPosX: 0,
             cameraPosY: 0.8,
             cameraPosZ: 20,
@@ -644,6 +800,7 @@
 
           this.initScene();
           this.initGUI();
+          this.setupMobileUI();
           this.createFileInput();
           this.loadPersistedSettings()
           .catch((error) => {
@@ -655,6 +812,126 @@
           this.animate();
           window.addEventListener("resize", () => this.onResize());
           window.addEventListener("beforeunload", () => this.persistSettingsSync());
+        }
+
+
+        detectMobileDevice() {
+          return window.matchMedia("(max-width: 900px), (pointer: coarse)").matches || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        }
+
+        setupMobileUI() {
+          const shouldUseMobileUI = this.isMobile;
+          document.body.classList.toggle("mobile-ui", shouldUseMobileUI);
+          if (!shouldUseMobileUI) return;
+
+          this.hudMinimized = true;
+          this.guiMinimized = true;
+          hudEl.classList.add("is-minimized");
+          hudEl.style.display = "";
+          hudToggleEl.setAttribute("aria-expanded", "false");
+          hudToggleEl.textContent = "HUD";
+          guiToggleEl.setAttribute("aria-expanded", "false");
+          guiToggleEl.textContent = "CTRL";
+
+          hudToggleEl.addEventListener("click", () => this.toggleHudMinimized());
+          guiToggleEl.addEventListener("click", () => this.toggleGuiMinimized());
+
+          document.getElementById("mobilePlay")?.addEventListener("click", () => this.play());
+          document.getElementById("mobilePause")?.addEventListener("click", () => this.pause());
+          document.getElementById("mobileStop")?.addEventListener("click", () => this.stop());
+          document.getElementById("mobileRestart")?.addEventListener("click", () => this.restart());
+
+          this.renderer?.domElement?.addEventListener("touchstart", (event) => this.handleMobileTouchStart(event), { passive: false });
+          this.renderer?.domElement?.addEventListener("touchmove", (event) => this.handleMobileTouchMove(event), { passive: false });
+          this.renderer?.domElement?.addEventListener("touchend", (event) => this.handleMobileTouchEnd(event), { passive: false });
+          this.renderer?.domElement?.addEventListener("touchcancel", () => { this.mobileTouch = null; }, { passive: true });
+
+          if (this.gui?.close) this.gui.close();
+          this.updateGuiCollapsedState();
+        }
+
+        toggleHudMinimized(force = null) {
+          this.hudMinimized = force == null ? !this.hudMinimized : !!force;
+          hudEl.classList.toggle("is-minimized", this.hudMinimized);
+          hudEl.style.display = this.hudMinimized ? "none" : "block";
+          hudToggleEl.setAttribute("aria-expanded", String(!this.hudMinimized));
+          hudToggleEl.textContent = this.hudMinimized ? "HUD" : "CLOSE";
+        }
+
+        updateGuiCollapsedState() {
+          const guiEl = document.getElementById("gui");
+          guiEl?.classList.toggle("is-minimized", this.guiMinimized);
+          guiToggleEl.setAttribute("aria-expanded", String(!this.guiMinimized));
+          guiToggleEl.textContent = this.guiMinimized ? "CTRL" : "CLOSE";
+        }
+
+        toggleGuiMinimized(force = null) {
+          this.guiMinimized = force == null ? !this.guiMinimized : !!force;
+          if (this.gui) {
+            if (this.guiMinimized && this.gui.close) this.gui.close();
+            if (!this.guiMinimized && this.gui.open) this.gui.open();
+          }
+          this.updateGuiCollapsedState();
+        }
+
+        isTargetInsideUI(target) {
+          return !!target?.closest?.("#hud, #gui, #scorePanel, #hudToggle, #guiToggle, #mobileTransport, .lil-gui, #VRButton");
+        }
+
+        handleMobileTouchStart(event) {
+          if (!this.isMobile || this.renderer?.xr?.isPresenting) return;
+          if (event.touches.length !== 1) {
+            this.mobileTouch = null;
+            return;
+          }
+          if (this.isTargetInsideUI(event.target)) {
+            this.mobileTouch = null;
+            return;
+          }
+          const touch = event.touches[0];
+          this.mobileTouch = {
+            startX: touch.clientX,
+            startY: touch.clientY,
+            startLane: this.collectorLaneIndex,
+            startZ: this.collectorZ,
+            moved: false,
+            startedAt: performance.now()
+          };
+          event.preventDefault();
+        }
+
+        handleMobileTouchMove(event) {
+          if (!this.mobileTouch || this.renderer?.xr?.isPresenting) return;
+          if (event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          const dx = touch.clientX - this.mobileTouch.startX;
+          const dy = touch.clientY - this.mobileTouch.startY;
+          if (Math.abs(dx) > 6 || Math.abs(dy) > 6) this.mobileTouch.moved = true;
+
+          const laneStepPx = 42;
+          const laneDelta = Math.round(dx / laneStepPx);
+          const laneCount = this.instrumentOrder.length;
+          this.collectorLaneIndex = ((this.mobileTouch.startLane + laneDelta) % laneCount + laneCount) % laneCount;
+
+          const minZ = this.getTunnelBackZ() + 8;
+          const maxZ = this.getTunnelFrontZ() + 0.3;
+          this.collectorZ = THREE.MathUtils.clamp(this.mobileTouch.startZ + dy * 0.28, minZ, maxZ);
+          this.updateCollectorPosition(true);
+          this.updateHUD();
+          event.preventDefault();
+        }
+
+        handleMobileTouchEnd(event) {
+          if (!this.mobileTouch || this.renderer?.xr?.isPresenting) {
+            this.mobileTouch = null;
+            return;
+          }
+          const touch = this.mobileTouch;
+          this.mobileTouch = null;
+          if (!touch.moved && performance.now() - touch.startedAt < 280) {
+            this.shootCollector();
+          }
+          event.preventDefault();
         }
 
         initScene() {
@@ -1807,6 +2084,12 @@
       }
 
       setupXR() {
+        if (!this.hasWebXR) {
+          this.xrSupported = false;
+          xrStatusEl.textContent = this.isIOS ? "XR: not available in this browser" : "XR: not available";
+          return;
+        }
+
         this.xrControllerFactory = new XRControllerModelFactory();
         this.xrHandFactory = new XRHandModelFactory();
 
@@ -1869,7 +2152,8 @@
       }
 
       async enterVR() {
-        this.xrButton?.click();
+        if (!this.hasWebXR || !this.xrButton) return;
+        this.xrButton.click();
       }
 
       disposeObject3D(obj) {
@@ -2107,15 +2391,16 @@ initGUI() {
     return f;
   };
 
-  gui.add(this.settings, "play").name("Play");
-  gui.add(this.settings, "pause").name("Pause");
-  gui.add(this.settings, "stop").name("Stop");
-  gui.add(this.settings, "restart").name("Restart");
-  gui.add(this.settings, "bpm", 10, 320, 1).name("BPM").onChange(() => this.handleBpmChange());
-  gui.add(this.settings, "masterVolume", 0, 1, 0.01).name("Master Volume").onChange(() => this.syncMasterVolume());
-  gui.add(this.settings, "lookAhead", 1.2, 3.2, 0.05).name("Visual Horizon").onChange((v) => this.horizon = v);
-  gui.add(this.settings, "visualSpeed", 10, 120, 1).name("Track Speed");
-  gui.add(this.settings, "xrEnterVR").name("Enter VR");
+  const transport = addClosed(gui, "Transport");
+  transport.add(this.settings, "play").name("Play");
+  transport.add(this.settings, "pause").name("Pause");
+  transport.add(this.settings, "stop").name("Stop");
+  transport.add(this.settings, "restart").name("Restart");
+  transport.add(this.settings, "bpm", 10, 320, 1).name("BPM").onChange(() => this.handleBpmChange());
+  transport.add(this.settings, "masterVolume", 0, 1, 0.01).name("Master Volume").onChange(() => this.syncMasterVolume());
+  transport.add(this.settings, "lookAhead", 1.2, 3.2, 0.05).name("Visual Horizon").onChange((v) => this.horizon = v);
+  transport.add(this.settings, "visualSpeed", 10, 120, 1).name("Track Speed");
+  transport.add(this.settings, "xrEnterVR").name("Enter VR");
 
   gui.close();
 
@@ -2181,8 +2466,8 @@ initGUI() {
   collector.add(this.settings, "collectorEnabled").name("Enabled").onChange(() => this.createCollector());
   collector.add(this.settings, "collectorShootingMode").name("Shooting Mode");
   collector.add(this.settings, "collectorShoot").name("Shoot");
-  collector.add(this.settings, "collectorRadius", 0.3, 3, 0.05).name("Radius").onChange(() => this.createCollector());
-  collector.add(this.settings, "collectorTube", 0.03, 0.4, 0.01).name("Tube").onChange(() => this.createCollector());
+  collector.add(this.settings, "collectorRadius", 0.3, 10, 0.05).name("Radius").onChange(() => this.createCollector());
+  collector.add(this.settings, "collectorTube", 0.03, 2, 0.01).name("Tube").onChange(() => this.createCollector());
   collector.addColor(this.settings, "collectorColor").name("Color").onChange(() => this.createCollector());
   collector.addColor(this.settings, "collectorGlow").name("Glow").onChange(() => this.createCollector());
   collector.add(this.settings, "collectorRotationX", -Math.PI, Math.PI, 0.01).name("Rotation X").onChange(() => this.applyCollectorVisualRotation());
@@ -2190,13 +2475,13 @@ initGUI() {
   collector.add(this.settings, "collectorRotationZ", -Math.PI, Math.PI, 0.01).name("Rotation Z").onChange(() => this.applyCollectorVisualRotation());
   collector.add(this.settings, "collectorSpinSpeed", -8, 8, 0.01).name("Spin Speed");
   collector.add(this.settings, "collectorHitWindow", 0.2, 5, 0.05).name("Hit Window");
-  collector.add(this.settings, "collectorShootSpeed", 10, 1000, 1).name("Bullet Speed");
+  collector.add(this.settings, "collectorShootSpeed", 10, 2000, 1).name("Bullet Speed");
   collector.add(this.settings, "collectorShootCooldown", 0.03, 0.8, 0.01).name("Shoot Cooldown");
-  collector.add(this.settings, "collectorBulletSize", 0.08, 3, 0.01).name("Bullet Size");
+  collector.add(this.settings, "collectorBulletSize", 0.08, 10, 0.01).name("Bullet Size");
   collector.addColor(this.settings, "collectorBulletColor").name("Bullet Color");
   collector.add(this.settings, "collectorBulletGeometry", ["random", "BoxGeometry", "SphereGeometry", "TetrahedronGeometry", "OctahedronGeometry", "IcosahedronGeometry", "ConeGeometry", "CylinderGeometry", "TorusGeometry"]).name("Bullet Shape");
-  collector.add(this.settings, "collectorExplosionSize", 0.5, 8, 0.05).name("Explosion Size");
-  collector.add(this.settings, "collectorExplosionDuration", 0.05, 1, 0.01).name("Explosion Dur");
+  collector.add(this.settings, "collectorExplosionSize", 0.5, 20, 0.05).name("Explosion Size");
+  collector.add(this.settings, "collectorExplosionDuration", 0.05, 2, 0.01).name("Explosion Dur");
   collector.add(this.settings, "fxUISoundsEnabled").name("UI SFX");
   collector.add(this.settings, "fxUIShootVolume", 0, 0.4, 0.005).name("Shoot SFX Vol");
   collector.add(this.settings, "fxUIHitVolume", 0, 0.4, 0.005).name("Hit SFX Vol");
@@ -2370,7 +2655,8 @@ initGUI() {
   }
 
   for (const f of folderList) f.close();
-    this.gui = gui;
+    if (this.isMobile && gui.close) gui.close();
+  this.gui = gui;
 }
 
 handleGuiChange(event) {
@@ -3708,6 +3994,8 @@ onResize() {
   this.camera.updateProjectionMatrix();
   this.renderer.setSize(window.innerWidth, window.innerHeight);
   this.updateRendererQuality();
+  const mobile = this.detectMobileDevice();
+  document.body.classList.toggle("mobile-ui", mobile);
 }
 }
 
